@@ -1,6 +1,7 @@
 import math
 import numpy as np
 from dataclasses import dataclass
+import random 
 
 import pygame
 SCREEN_WIDTH = 2000
@@ -152,18 +153,17 @@ def draw_hud(surface, font, car):
         pygame.display.set_caption(text)
 
 class state:
-    
     def __init__(self, x1, x2, a, s, cost = 0):
         self.x1 = x1
         self.x2 = x2 
         self.a = a 
         self.s = s
-        self.x1bar = self.x0 + self.s * math.cos(self.a)*DISTANCE_TIME_PROP
+        self.x1bar = self.x1 + self.s * math.cos(self.a)*DISTANCE_TIME_PROP
         self.x2bar = self.x2 + self.s * math.sin(self.a)*DISTANCE_TIME_PROP 
         self.cost = cost #we need to define cost
 
     def distance(self, s2):
-        return (math.sqrt((self.x1bar - s2.x1bar)**2 + (self.x2bar - s2.x2bar)))
+        return (math.sqrt((self.x1bar - s2.x1bar)**2 + (self.x2bar - s2.x2bar)**2))
     
     
 class action:
@@ -186,31 +186,31 @@ class SSTTree:
         self.E = np.array([])
 
 def getRandomState():
-    x_1_rand = random.unif(0, SCREEN_WIDTH) 
-    x_2_rand = random.unif(0, SCREEN_HEIGHT)
-    a_rand = random.unif(0, 2 * math.pi())
-    speed_rand = random.unif(0, 10) #ask claude how we should define this 
+    x_1_rand = random.uniform(0, SCREEN_WIDTH) 
+    x_2_rand = random.uniform(0, SCREEN_HEIGHT)
+    a_rand = random.uniform(0, 2 * math.pi())
+    speed_rand = random.uniform(0, 10) #ask claude how we should define this 
 
     return state(x_1_rand, x_2_rand, a_rand, speed_rand)
 
 def getRandomAction():
-    acceleration_rand = random.unif(0,10) #ask claude how we should define this
-    steer_rand = random.unif(0, 2 * math.pi())
+    acceleration_rand = random.uniform(0,10) #ask claude how we should define this
+    steer_rand = random.uniform(0, 2 * math.pi())
 
     return action(acceleration_rand, steer_rand)
 
 def monteCarloProp(x_selected):
     action = getRandomAction()
     time = random.uniform(0, TIME_PROP)
-    x1_final = x_selected.x1 + ((x_sx_selected.s + action.ds * timelected.s/action.da) * (math.sin(x_selected.a + action.da * time) - math.sin(x_selected.a)) + (action.ds/action.da**2) * (cos(x_selected.a + action.da * time) - math.cos(x_selected.a) + action.da * time * sin(x_selected.a + action.da * time))
-    x2_final = x_selected.x2 - ((x_selected.s/action.da) * (math.cos(x_selected.a + action.da * time) - math.cos(x_selected.a)) + (action.ds/action.da**2) * (sin(x_selected.a + action.da * time) - math.sin(x_selected.a) - action.da * time * sin(x_selected.a + action.da * time))
+    x1_final = x_selected.x1 + (x_selected.s / action.da) * (math.sin(x_selected.a + action.da * time) - math.sin(x_selected.a)) + (action.ds / action.da**2) * (math.cos(x_selected.a + action.da * time) - math.cos(x_selected.a) + action.da * time * math.sin(x_selected.a + action.da * time))
+    x2_final = x_selected.x2 - (x_selected.s / action.da) * (math.cos(x_selected.a + action.da * time) - math.cos(x_selected.a)) + (action.ds / action.da**2) * (math.sin(x_selected.a + action.da * time) - math.sin(x_selected.a) - action.da * time * math.cos(x_selected.a + action.da * time))
     #check for possible errors?
     return state(x1_final, x2_final, x_selected.a + action.da * time, x_selected.s + action.ds * time)
 
 
 def near(nodeList, s1):
-    x_near = np.array([])
-    min = 'inf'
+    x_near = []
+    min = float('inf')
     min_node = nodeList[0]
     for i in range(len(nodeList)):
         if nodeList[i].distance(s1) <= delta_B_N:
@@ -224,18 +224,18 @@ def near(nodeList, s1):
 
 def bestFirstSelectionSST(t):
     x_rand = getRandomState()
-    x_near, min_node = near(t, x_rand)
+    x_near, min_node = near(t.active, x_rand)
     
     if len(x_near) == 0:
         return min_node
     else:
-        min_cost = 'inf'
+        min_cost = float('inf')
         min_cost_index = 0
         for i in range(len(x_near)):
-            if x_near.cost < min_cost:
+            if x_near[i].cost < min_cost:
                 min_cost_index = i
                 min_cost = x_near[i].cost
-        return i 
+        return x_near[min_cost_index]
 
 
 
