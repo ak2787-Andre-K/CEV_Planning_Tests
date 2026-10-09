@@ -17,7 +17,13 @@ CAR_WIDTH = 10
 WHEELBASE = 14  # distance between front and rear axles
 WHEEL_LENGTH = 5
 WHEEL_WIDTH = 2
+#rrt stuff
+STEP_SIZE = 20     
+GOAL_BIAS = 0.05 
+MAX_ITERS = 5000
+OBSTACLE_MARGIN = CAR_WIDTH / 2  # keep the path this far from obstacle edges
 
+#this stuff is for sst
 DISTANCE_TIME_PROP = 1
 delta_B_N = 7 
 delta_S = 7 
@@ -151,6 +157,65 @@ def draw_hud(surface, font, car):
         surface.blit(font.render(text, True, "white"), (10, 10))
     else:
         pygame.display.set_caption(text)
+
+class Node:
+    def __init__(self, x, y, parent=None):
+        self.x = x
+        self.y = y
+        self.parent = parent
+
+def dist(x1, y1, x2, y2):
+    return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    
+def sample_point():
+    if random.random() < GOAL_BIAS:
+        return TARGET
+    else:
+        return (random.uniform(0, SCREEN_WIDTH), random.uniform(0, SCREEN_HEIGHT))
+    
+def nearest_node(tree, x, y):
+    best = tree[0]
+    for node in tree:
+        if dist(node.x, node.y, x, y) < dist(best.x, best.y, x, y):
+            best = node
+    return best
+
+def steer(n_near, x, y):
+    if dist(n_near.x, n_near.y, x, y) <= STEP_SIZE:
+        return x, y
+    theta = math.atan2(y - n_near.y, x - n_near.x)
+    return n_near.x + STEP_SIZE * math.cos(theta), n_near.y + STEP_SIZE * math.sin(theta)
+
+
+def collision_free(x1, y1, x2, y2):
+    #check not sure how this would work? Looping through all of the obstacles seems bad. Could consider sorting them obstacles and checking after?
+    pass
+
+def reached_goal(x, y):
+    return dist(x, y, TARGET[0], TARGET[1]) <= TARGET_RAD
+
+def get_path(node):
+    path = []
+    while node is not None:
+        path.append((node.x, node.y))
+        node = node.parent
+    path.reverse()
+    return path
+
+def rrt(start):
+    tree = [Node(start[0], start[1])]
+    for i in range(MAX_ITERS):
+        x, y = sample_point()
+        n_near = nearest_node(tree, x , y)
+        next_x, next_y = steer(n_near, x, y)
+
+        if collision_free(n_near.x, n_near.y, next_x, next_y):
+            new_node = Node(next_x, next_y, n_near)
+            tree.append(new_node)
+            if reached_goal(next_x, next_y):
+                return tree, get_path(new_node)
+
+    return tree, None
 
 class state:
     def __init__(self, x1, x2, a, s, cost = 0):
