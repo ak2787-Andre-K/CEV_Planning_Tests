@@ -156,17 +156,12 @@ class state:
         self.x1 = x1
         self.x2 = x2 
         self.a = a 
-        self.s = s 
+        self.s = s
+        self.x1bar = self.x0 + self.s * math.cos(self.a)*DISTANCE_TIME_PROP
+        self.x2bar = self.x2 + self.s * math.sin(self.a)*DISTANCE_TIME_PROP 
+
     def distance(self, s2):
-        s1x1bar = self.x1 + self.s * math.cos(self.a)*DISTANCE_TIME_PROP
-        s1x2bar = self.x2 + self.s * math.sin(self.a)*DISTANCE_TIME_PROP 
-
-        s2x1bar = s2.x1 + s2.s * math.sin(s2.a)*DISTANCE_TIME_PROP 
-        s2x2bar = s2.x2 + s2.s * math.sin(s2.a)*DISTANCE_TIME_PROP 
-
-        ans = math.sqrt((s1x1bar - s2x1bar)**2 + (s1x2bar - s2x2bar)**2)
-
-        return ans
+        return (math.sqrt((self.x1bar - s2.x1bar)**2 + (self.x2bar - s2.x2bar)))
     
     
 class action:
@@ -190,12 +185,27 @@ class SSTTree:
 def getRandomState():
     x_1_rand = random.unif(0, SCREEN_WIDTH) 
     x_2_rand = random.unif(0, SCREEN_HEIGHT)
-    a_rand = 
+    a_rand = random.unif(0, 2*math.pi())
+    speed_rand = random.unif(0, 10) #ask claude how we should define this 
 
-def bestFirstSelectionSST():
-    x_1_rand = random.unif(0, SCREEN_WIDTH) 
-    x_2_rand = random.unif(0, SCREEN_HEIGHT)
-    a_rand = 
+    return state(x_1_rand, x_2_rand, a_rand, speed_rand)
+
+def near(nodeList, s1):
+    x_near = np.array([])
+    for i in range(len(nodeList)):
+        if tree.active[i] <= delta_B_N:
+            x_near.append(nodeList[i])
+
+    return x_near, min(nodeList.distance(s1))
+        
+
+
+def bestFirstSelectionSST(t):
+    x_rand = getRandomState()
+    x_near = near(t, x_rand)
+
+    return 
+
 
 
 def main():
