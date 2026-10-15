@@ -8,6 +8,8 @@ import pygame
 SCREEN_WIDTH = 2000
 SCREEN_HEIGHT = 1000
 SCREEN_SIZE = (2000, 1000)
+WINDOW_SCALE = 0.7  # the map is drawn at full size, then shrunk by this much to fit on a laptop screen
+WINDOW_SIZE = (int(SCREEN_WIDTH * WINDOW_SCALE), int(SCREEN_HEIGHT * WINDOW_SCALE))
 FPS = 60
 TARGET = (1950, 700)
 TARGET_RAD = (70)
@@ -22,7 +24,14 @@ WHEEL_WIDTH = 2
 STEP_SIZE = 20     
 GOAL_BIAS = 0.05 
 MAX_ITERS = 5000
+RRT_START = (20, 140)  # (100, 100) is inside an obstacle
 OBSTACLE_MARGIN = CAR_WIDTH / 2  # keep the path this far from obstacle edges
+# path following
+FOLLOW_SPEED = 80  # px/s, cruising speed along the path
+LOOKAHEAD = 25  # px, aim at the first path point at least this far ahead
+K_HEADING = 4  # heading error (rad) -> desired heading rate (rad/s)
+K_STEER = 10  # heading rate error -> steering rate
+K_SPEED = 2  # speed error -> acceleration
 
 #this stuff is for sst
 DISTANCE_TIME_PROP = 1
@@ -325,12 +334,55 @@ def bestFirstSelectionSST(t):
 
 
 
+def draw_rrt(surface, tree, path):
+    for node in tree:
+        if node.parent is not None:
+            pygame.draw.line(surface, "gray", (node.parent.x, node.parent.y), (node.x, node.y), 2)
+    if path:
+        pygame.draw.lines(surface, "yellow", False, path, 4)
+    pygame.draw.circle(surface, "orange", RRT_START, 8)
+
+
+def angle_diff(a, b):
+    """Smallest signed angle from b to a, in [-pi, pi]."""
+    return (a - b + math.pi) % (2 * math.pi) - math.pi
+
+
+def follow_path(car, path, index):
+    """Steer the car toward the path point LOOKAHEAD px ahead. Returns the updated waypoint index."""
+    # Skip past waypoints that are already close, so the car always aims a bit ahead of itself
+    while index < len(path) - 1 and dist(car.x, car.y, *path[index]) < LOOKAHEAD:
+        index += 1
+    tx, ty = path[index]
+
+    # Heading: turn toward the waypoint, faster the further off we are
+    heading_error = angle_diff(math.atan2(ty - car.y, tx - car.x), car.heading)
+    desired_rate = clamp(K_HEADING * heading_error, -MAX_STEER, MAX_STEER)
+    car.set_steering_rate(K_STEER * (desired_rate - car.steering))
+
+    # Speed: cruise, slow down in sharp turns, and stop once inside the target
+    target_speed = 0 if reached_goal(car.x, car.y) else FOLLOW_SPEED * max(0.3, math.cos(heading_error))
+    car.set_acceleration(K_SPEED * (target_speed - car.velocity))
+    return index
+
+
 def main():
     pygame.init()
-    screen = pygame.display.set_mode(SCREEN_SIZE)
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    world = pygame.Surface(SCREEN_SIZE)  # full-size map; shrunk onto the window each frame
     clock = pygame.time.Clock()
     font = load_font()
-    car = Car(100, 100)
+
+    tree, path = rrt(RRT_START)
+    if path:
+        print(f"RRT reached the goal: {len(tree)} nodes, path of {len(path)} points")
+    else:
+        print(f"RRT did not reach the goal in {MAX_ITERS} iterations ({len(tree)} nodes)")
+
+    # Start the car at the RRT start, pointing along the first path segment
+    heading = math.atan2(path[1][1] - path[0][1], path[1][0] - path[0][0]) if path else 0.0
+    car = Car(RRT_START[0], RRT_START[1], heading)
+    waypoint = 0
 
     dt = 0.0
     running = True
@@ -342,16 +394,21 @@ def main():
         keys = pygame.key.get_pressed()
         throttle = keys[pygame.K_w] - keys[pygame.K_s]
         steer = keys[pygame.K_d] - keys[pygame.K_a]
-        car.set_acceleration(throttle * MAX_ACCELERATION)
-        car.set_steering_rate(steer * MAX_STEER_RATE)
+        if path and not (throttle or steer):
+            waypoint = follow_path(car, path, waypoint)  # autopilot along the RRT path
+        else:
+            car.set_acceleration(throttle * MAX_ACCELERATION)  # WASD takes over while held
+            car.set_steering_rate(steer * MAX_STEER_RATE)
         car.update(dt)
 
-        screen.fill("black")
-        draw_obstacles(screen)
-        car.draw(screen)
-        draw_hud(screen, font, car)
+        world.fill("black")
+        draw_obstacles(world)
+        pygame.draw.circle(world, "PURPLE", TARGET, TARGET_RAD)
+        draw_rrt(world, tree, path)
+        car.draw(world)
 
-        pygame.draw.circle(screen, "PURPLE", TARGET, TARGET_RAD)
+        screen.blit(pygame.transform.smoothscale(world, WINDOW_SIZE), (0, 0))
+        draw_hud(screen, font, car)
         pygame.display.flip()
 
         dt = clock.tick(FPS) / 1000
