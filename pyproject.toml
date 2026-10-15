@@ -1,0 +1,10 @@
+[project]
+name = "cev-planner-hw"
+version = "0.1.0"
+description = "Toy global planner homework comparing RRT and A*"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pygame",
+]
