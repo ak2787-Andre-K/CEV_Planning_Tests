@@ -1,43 +1,26 @@
-import math
-import numpy as np
-from dataclasses import dataclass
-import random 
+"""Shared world for the planners: map, obstacles, the car model, collision checks and drawing."""
 import bisect
+import math
+from dataclasses import dataclass
 
 import pygame
+
 SCREEN_WIDTH = 2000
 SCREEN_HEIGHT = 1000
-SCREEN_SIZE = (2000, 1000)
+SCREEN_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 WINDOW_SCALE = 0.7  # the map is drawn at full size, then shrunk by this much to fit on a laptop screen
 WINDOW_SIZE = (int(SCREEN_WIDTH * WINDOW_SCALE), int(SCREEN_HEIGHT * WINDOW_SCALE))
 FPS = 60
+START = (20, 140)  # (100, 100) is inside an obstacle
 TARGET = (1950, 700)
-TARGET_RAD = (70)
-TARGET_SPEED = 5
+TARGET_RAD = 70
 # Car geometry (pixels)
 CAR_LENGTH = 20
 CAR_WIDTH = 10
 WHEELBASE = 14  # distance between front and rear axles
 WHEEL_LENGTH = 5
 WHEEL_WIDTH = 2
-#rrt stuff
-STEP_SIZE = 20     
-GOAL_BIAS = 0.05 
-MAX_ITERS = 5000
-RRT_START = (20, 140)  # (100, 100) is inside an obstacle
-OBSTACLE_MARGIN = CAR_WIDTH / 2  # keep the path this far from obstacle edges
-# path following
-FOLLOW_SPEED = 80  # px/s, cruising speed along the path
-LOOKAHEAD = 25  # px, aim at the first path point at least this far ahead
-K_HEADING = 4  # heading error (rad) -> desired heading rate (rad/s)
-K_STEER = 10  # heading rate error -> steering rate
-K_SPEED = 2  # speed error -> acceleration
-
-#this stuff is for sst
-DISTANCE_TIME_PROP = 1
-delta_B_N = 7 
-delta_S = 7 
-TIME_PROP = 0.5
+OBSTACLE_MARGIN = CAR_WIDTH / 2  # keep paths this far from obstacle edges
 # Car dynamics
 MAX_ACCELERATION = 120  # px/s^2, limit on set_acceleration()
 MAX_SPEED = 300  # px/s
@@ -174,33 +157,21 @@ def draw_hud(surface, font, car):
     else:
         pygame.display.set_caption(text)
 
-class Node:
-    def __init__(self, x, y, parent=None):
-        self.x = x
-        self.y = y
-        self.parent = parent
+
+def draw_world(surface):
+    """Obstacles, target and start marker on the full-size map surface."""
+    draw_obstacles(surface)
+    pygame.draw.circle(surface, "purple", TARGET, TARGET_RAD)
+    pygame.draw.circle(surface, "orange", START, 8)
+
 
 def dist(x1, y1, x2, y2):
     return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-    
-def sample_point():
-    if random.random() < GOAL_BIAS:
-        return TARGET
-    else:
-        return (random.uniform(0, SCREEN_WIDTH), random.uniform(0, SCREEN_HEIGHT))
-    
-def nearest_node(tree, x, y):
-    best = tree[0]
-    for node in tree:
-        if dist(node.x, node.y, x, y) < dist(best.x, best.y, x, y):
-            best = node
-    return best
 
-def steer(n_near, x, y):
-    if dist(n_near.x, n_near.y, x, y) <= STEP_SIZE:
-        return x, y
-    theta = math.atan2(y - n_near.y, x - n_near.x)
-    return n_near.x + STEP_SIZE * math.cos(theta), n_near.y + STEP_SIZE * math.sin(theta)
+
+def angle_diff(a, b):
+    """Smallest signed angle from b to a, in [-pi, pi]."""
+    return (a - b + math.pi) % (2 * math.pi) - math.pi
 
 
 def collision_free(x1, y1, x2, y2):
@@ -221,199 +192,6 @@ def collision_free(x1, y1, x2, y2):
                 return False
     return True
 
+
 def reached_goal(x, y):
     return dist(x, y, TARGET[0], TARGET[1]) <= TARGET_RAD
-
-def get_path(node):
-    path = []
-    while node is not None:
-        path.append((node.x, node.y))
-        node = node.parent
-    path.reverse()
-    return path
-
-def rrt(start):
-    tree = [Node(start[0], start[1])]
-    for i in range(MAX_ITERS):
-        x, y = sample_point()
-        n_near = nearest_node(tree, x , y)
-        next_x, next_y = steer(n_near, x, y)
-
-        if collision_free(n_near.x, n_near.y, next_x, next_y):
-            new_node = Node(next_x, next_y, n_near)
-            tree.append(new_node)
-            if reached_goal(next_x, next_y):
-                return tree, get_path(new_node)
-
-    return tree, None
-
-class state:
-    def __init__(self, x1, x2, a, s, cost = 0):
-        self.x1 = x1
-        self.x2 = x2 
-        self.a = a 
-        self.s = s
-        self.x1bar = self.x1 + self.s * math.cos(self.a)*DISTANCE_TIME_PROP
-        self.x2bar = self.x2 + self.s * math.sin(self.a)*DISTANCE_TIME_PROP 
-        self.cost = cost #we need to define cost
-
-    def distance(self, s2):
-        return (math.sqrt((self.x1bar - s2.x1bar)**2 + (self.x2bar - s2.x2bar)**2))
-    
-    
-class action:
-    def __init__(self, da, ds):
-        self.da = da 
-        self.ds = ds 
-
-class edge:
-    def __init__(self, s1, s2):
-        self.s1 = s1
-        self.s2 = s2
-
-
-class SSTTree:
-    def __init__(self, s1):
-        self.active = np.array([s1])
-
-        self.inactive = np.array([])
-    
-        self.E = np.array([])
-
-def getRandomState():
-    x_1_rand = random.uniform(0, SCREEN_WIDTH) 
-    x_2_rand = random.uniform(0, SCREEN_HEIGHT)
-    a_rand = random.uniform(0, 2 * math.pi())
-    speed_rand = random.uniform(0, 10) #ask claude how we should define this 
-
-    return state(x_1_rand, x_2_rand, a_rand, speed_rand)
-
-def getRandomAction():
-    acceleration_rand = random.uniform(0,10) #ask claude how we should define this
-    steer_rand = random.uniform(0, 2 * math.pi())
-
-    return action(acceleration_rand, steer_rand)
-
-def monteCarloProp(x_selected):
-    action = getRandomAction()
-    time = random.uniform(0, TIME_PROP)
-    x1_final = x_selected.x1 + (x_selected.s / action.da) * (math.sin(x_selected.a + action.da * time) - math.sin(x_selected.a)) + (action.ds / action.da**2) * (math.cos(x_selected.a + action.da * time) - math.cos(x_selected.a) + action.da * time * math.sin(x_selected.a + action.da * time))
-    x2_final = x_selected.x2 - (x_selected.s / action.da) * (math.cos(x_selected.a + action.da * time) - math.cos(x_selected.a)) + (action.ds / action.da**2) * (math.sin(x_selected.a + action.da * time) - math.sin(x_selected.a) - action.da * time * math.cos(x_selected.a + action.da * time))
-    #check for possible errors?
-    return state(x1_final, x2_final, x_selected.a + action.da * time, x_selected.s + action.ds * time)
-
-
-def near(nodeList, s1):
-    x_near = []
-    min = float('inf')
-    min_node = nodeList[0]
-    for i in range(len(nodeList)):
-        if nodeList[i].distance(s1) <= delta_B_N:
-            x_near.append(nodeList[i])
-        if nodeList[i].distance(s1)<=min:
-            min = nodeList[i].distance(s1)
-            min_node = nodeList[i]
-
-    return x_near, min_node
-        
-
-def bestFirstSelectionSST(t):
-    x_rand = getRandomState()
-    x_near, min_node = near(t.active, x_rand)
-    
-    if len(x_near) == 0:
-        return min_node
-    else:
-        min_cost = float('inf')
-        min_cost_index = 0
-        for i in range(len(x_near)):
-            if x_near[i].cost < min_cost:
-                min_cost_index = i
-                min_cost = x_near[i].cost
-        return x_near[min_cost_index]
-
-
-
-def draw_rrt(surface, tree, path):
-    for node in tree:
-        if node.parent is not None:
-            pygame.draw.line(surface, "gray", (node.parent.x, node.parent.y), (node.x, node.y), 2)
-    if path:
-        pygame.draw.lines(surface, "yellow", False, path, 4)
-    pygame.draw.circle(surface, "orange", RRT_START, 8)
-
-
-def angle_diff(a, b):
-    """Smallest signed angle from b to a, in [-pi, pi]."""
-    return (a - b + math.pi) % (2 * math.pi) - math.pi
-
-
-def follow_path(car, path, index):
-    """Steer the car toward the path point LOOKAHEAD px ahead. Returns the updated waypoint index."""
-    # Skip past waypoints that are already close, so the car always aims a bit ahead of itself
-    while index < len(path) - 1 and dist(car.x, car.y, *path[index]) < LOOKAHEAD:
-        index += 1
-    tx, ty = path[index]
-
-    # Heading: turn toward the waypoint, faster the further off we are
-    heading_error = angle_diff(math.atan2(ty - car.y, tx - car.x), car.heading)
-    desired_rate = clamp(K_HEADING * heading_error, -MAX_STEER, MAX_STEER)
-    car.set_steering_rate(K_STEER * (desired_rate - car.steering))
-
-    # Speed: cruise, slow down in sharp turns, and stop once inside the target
-    target_speed = 0 if reached_goal(car.x, car.y) else FOLLOW_SPEED * max(0.3, math.cos(heading_error))
-    car.set_acceleration(K_SPEED * (target_speed - car.velocity))
-    return index
-
-
-def main():
-    pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
-    world = pygame.Surface(SCREEN_SIZE)  # full-size map; shrunk onto the window each frame
-    clock = pygame.time.Clock()
-    font = load_font()
-
-    tree, path = rrt(RRT_START)
-    if path:
-        print(f"RRT reached the goal: {len(tree)} nodes, path of {len(path)} points")
-    else:
-        print(f"RRT did not reach the goal in {MAX_ITERS} iterations ({len(tree)} nodes)")
-
-    # Start the car at the RRT start, pointing along the first path segment
-    heading = math.atan2(path[1][1] - path[0][1], path[1][0] - path[0][0]) if path else 0.0
-    car = Car(RRT_START[0], RRT_START[1], heading)
-    waypoint = 0
-
-    dt = 0.0
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-        keys = pygame.key.get_pressed()
-        throttle = keys[pygame.K_w] - keys[pygame.K_s]
-        steer = keys[pygame.K_d] - keys[pygame.K_a]
-        if path and not (throttle or steer):
-            waypoint = follow_path(car, path, waypoint)  # autopilot along the RRT path
-        else:
-            car.set_acceleration(throttle * MAX_ACCELERATION)  # WASD takes over while held
-            car.set_steering_rate(steer * MAX_STEER_RATE)
-        car.update(dt)
-
-        world.fill("black")
-        draw_obstacles(world)
-        pygame.draw.circle(world, "PURPLE", TARGET, TARGET_RAD)
-        draw_rrt(world, tree, path)
-        car.draw(world)
-
-        screen.blit(pygame.transform.smoothscale(world, WINDOW_SIZE), (0, 0))
-        draw_hud(screen, font, car)
-        pygame.display.flip()
-
-        dt = clock.tick(FPS) / 1000
-    pygame.quit()
-
-
-if __name__ == "__main__":
-    main()
