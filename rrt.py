@@ -2,23 +2,32 @@
 import math
 import random
 
-import pygame
+import numpy as np
 
-from world import (
-    FPS, MAX_ACCELERATION, MAX_STEER, MAX_STEER_RATE, SCREEN_HEIGHT, SCREEN_SIZE, SCREEN_WIDTH,
-    START, TARGET, WINDOW_SIZE, Car, angle_diff, clamp, collision_free, dist, draw_hud,
-    draw_world, load_font, reached_goal,
-)
+import cev_sim
+from world import MAX_ACCELERATION, MAX_STEER, MAX_STEER_RATE, Car, angle_diff, clamp, dist
 
-STEP_SIZE = 20
+ENVIRONMENT = "first-demo"
+VEHICLE = "merceves"
+STEP_SIZE = 0.4  # m
 GOAL_BIAS = 0.05
 MAX_ITERS = 5000
+GOAL_RADIUS = 0.6  # m
 # path following
-FOLLOW_SPEED = 80  # px/s, cruising speed along the path
-LOOKAHEAD = 25  # px, aim at the first path point at least this far ahead
+FOLLOW_SPEED = 2.0  # m/s, cruising speed along the path
+LOOKAHEAD = 1.5  # m, aim at the first path point at least this far ahead
 K_HEADING = 4  # heading error (rad) -> desired heading rate (rad/s)
 K_STEER = 10  # heading rate error -> steering rate
 K_SPEED = 2  # speed error -> acceleration
+
+# Filled in by prepare() from the cev_sim world.
+GRID = None
+BOUNDS = None
+START = None
+TARGET = None
+WHEELBASE = None
+MAX_ANGLE = None
+MAX_SPEED = None
 
 
 class Node:
@@ -28,11 +37,60 @@ class Node:
         self.parent = parent
 
 
+def prepare(world):
+    """Bounds, start, and goal from a cev_sim PlanningWorld."""
+    global GRID, BOUNDS, START, TARGET, WHEELBASE, MAX_ANGLE, MAX_SPEED
+    GRID = world.occupancy_grid(0.25, inflate_m=world.vehicle.width_m * 0.5)
+    rows, cols = GRID.cells.shape
+    BOUNDS = (
+        GRID.origin_x,
+        GRID.origin_z,
+        GRID.origin_x + cols * GRID.resolution_m,
+        GRID.origin_z + rows * GRID.resolution_m,
+    )
+    START = free_endpoint(world.start.x, world.start.z, world.route_polyline)
+    TARGET = free_endpoint(world.goal.x, world.goal.z, world.route_polyline[::-1])
+    WHEELBASE = world.vehicle.wheelbase_m
+    MAX_ANGLE = world.vehicle.max_steering_rad
+    MAX_SPEED = world.vehicle.max_speed_mps
+
+
+def cell_free(x, y):
+    row, col = GRID.world_to_grid(x, y)
+    rows, cols = GRID.cells.shape
+    if row < 0 or col < 0 or row >= rows or col >= cols:
+        return False
+    return GRID.cells[row, col] == 0
+
+
+def free_endpoint(x, y, polyline):
+    """The pose itself when it is free, otherwise the first free point along the route."""
+    if cell_free(x, y):
+        return (x, y)
+    for point in polyline:
+        if cell_free(float(point[0]), float(point[1])):
+            return (float(point[0]), float(point[1]))
+    raise RuntimeError(f"{VEHICLE} does not fit on the {ENVIRONMENT} road.")
+
+
+def collision_free(x1, y1, x2, y2):
+    samples = int(dist(x1, y1, x2, y2) / GRID.resolution_m) + 1
+    for i in range(samples + 1):
+        t = i / samples
+        if not cell_free(x1 + t * (x2 - x1), y1 + t * (y2 - y1)):
+            return False
+    return True
+
+
+def reached_goal(x, y):
+    return dist(x, y, TARGET[0], TARGET[1]) <= GOAL_RADIUS
+
+
 def sample_point():
     if random.random() < GOAL_BIAS:
         return TARGET
     else:
-        return (random.uniform(0, SCREEN_WIDTH), random.uniform(0, SCREEN_HEIGHT))
+        return (random.uniform(BOUNDS[0], BOUNDS[2]), random.uniform(BOUNDS[1], BOUNDS[3]))
     
 def nearest_node(tree, x, y):
     best = tree[0]
@@ -72,14 +130,6 @@ def rrt(start):
     return tree, None
 
 
-def draw_rrt(surface, tree, path):
-    for node in tree:
-        if node.parent is not None:
-            pygame.draw.line(surface, "gray", (node.parent.x, node.parent.y), (node.x, node.y), 2)
-    if path:
-        pygame.draw.lines(surface, "yellow", False, path, 4)
-
-
 def follow_path(car, path, index):
     """Steer the car toward the path point LOOKAHEAD px ahead. Returns the updated waypoint index."""
     # Skip past waypoints that are already close, so the car always aims a bit ahead of itself
@@ -98,52 +148,84 @@ def follow_path(car, path, index):
     return index
 
 
-def main():
-    pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
-    world = pygame.Surface(SCREEN_SIZE)  # full-size map; shrunk onto the window each frame
-    clock = pygame.time.Clock()
-    font = load_font()
+def sync(car, sim):
+    """Copy the sim pose. follow_path's heading is atan2(dz, dx), which is -yaw."""
+    pose = sim.pose()
+    velocity = sim.velocity()
+    yaw = float(pose[2])
+    car.x, car.y, car.heading = float(pose[0]), float(pose[1]), -yaw
+    car.steering = -float(velocity[2])
+    return yaw
 
-    tree, path = rrt(START)
-    if path:
-        print(f"RRT reached the goal: {len(tree)} nodes, path of {len(path)} points")
+
+def step_car(car, sim, dt):
+    """Integrate the heading-rate command, then send the steering fraction."""
+    car.velocity = clamp(car.velocity + car.acceleration * dt, -MAX_SPEED, MAX_SPEED)
+    omega = clamp(car.steering + car.steering_rate * dt, -MAX_STEER, MAX_STEER)
+    yaw = float(sim.pose()[2])
+    velocity = sim.velocity()
+    v = float(velocity[0]) * math.cos(yaw) + float(velocity[1]) * (-math.sin(yaw))
+    # shortcut: yaw rate is undefined below 0.3 m/s; a creep reading also flips sign, so use the command
+    if abs(v) < 0.3:
+        v_map = 0.3 if car.velocity >= 0.0 else -0.3
     else:
-        print(f"RRT did not reach the goal in {MAX_ITERS} iterations ({len(tree)} nodes)")
+        v_map = v
+    steer = math.atan(omega * WHEELBASE / v_map) / max(MAX_ANGLE, 1e-6)
+    action = np.array(
+        [np.clip(car.velocity / MAX_SPEED, -1.0, 1.0), np.clip(steer, -1.0, 1.0)],
+        dtype=np.float32,
+    )
+    sim.step(action)
+    sync(car, sim)
+    return action
 
-    # Start the car at the RRT start, pointing along the first path segment
-    heading = math.atan2(path[1][1] - path[0][1], path[1][0] - path[0][0]) if path else 0.0
-    car = Car(START[0], START[1], heading)
-    waypoint = 0
 
-    dt = 0.0
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+def main():
+    import matplotlib.pyplot as plt
 
-        keys = pygame.key.get_pressed()
-        throttle = keys[pygame.K_w] - keys[pygame.K_s]
-        steer = keys[pygame.K_d] - keys[pygame.K_a]
-        if path and not (throttle or steer):
-            waypoint = follow_path(car, path, waypoint)  # autopilot along the RRT path
+    config = cev_sim.configure(environment=ENVIRONMENT, vehicle=VEHICLE, goal=None)
+    sim = None
+    try:
+        prepare(config.world)
+        tree, path = rrt(START)
+        if path:
+            print(f"RRT reached the goal: {len(tree)} nodes, path of {len(path)} points")
         else:
-            car.set_acceleration(throttle * MAX_ACCELERATION)  # WASD takes over while held
-            car.set_steering_rate(steer * MAX_STEER_RATE)
-        car.update(dt)
+            print(f"RRT did not reach the goal in {MAX_ITERS} iterations ({len(tree)} nodes)")
 
-        world.fill("black")
-        draw_world(world)
-        draw_rrt(world, tree, path)
-        car.draw(world)
+        car = Car(START[0], START[1])
+        sim = cev_sim.launch(config, render_mode="human")
+        sim.reset(seed=1)
+        sync(car, sim)
+        if path:
+            sim.set_overlay(path)
+        held = set()
 
-        screen.blit(pygame.transform.smoothscale(world, WINDOW_SIZE), (0, 0))
-        draw_hud(screen, font, car)
-        pygame.display.flip()
+        def on_press(event):
+            if event.key:
+                held.add(event.key.lower())
 
-        dt = clock.tick(FPS) / 1000
-    pygame.quit()
+        def on_release(event):
+            if event.key:
+                held.discard(event.key.lower())
+
+        figure = plt.gcf()
+        figure.canvas.mpl_connect("key_press_event", on_press)
+        figure.canvas.mpl_connect("key_release_event", on_release)
+        waypoint = 0
+        while sim.loop() and plt.fignum_exists(figure.number):
+            throttle = ("w" in held) - ("s" in held)
+            steer = ("d" in held) - ("a" in held)
+            if path and not (throttle or steer):
+                waypoint = follow_path(car, path, waypoint)  # autopilot along the RRT path
+            else:
+                car.set_acceleration(throttle * MAX_ACCELERATION)  # WASD takes over while held
+                car.set_steering_rate(steer * MAX_STEER_RATE)
+            step_car(car, sim, sim.clock.dt())
+    finally:
+        if sim is not None:
+            sim.close()
+        config.close()
 
 
 if __name__ == "__main__":

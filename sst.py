@@ -3,12 +3,9 @@ import math
 import random
 
 import numpy as np
-import pygame
 
-from world import (
-    FPS, MAX_ACCELERATION, MAX_STEER_RATE, SCREEN_HEIGHT, SCREEN_SIZE, SCREEN_WIDTH, START,
-    WINDOW_SIZE, Car, draw_hud, draw_world, load_font,
-)
+import cev_sim
+from world import SCREEN_HEIGHT, SCREEN_WIDTH
 
 DISTANCE_TIME_PROP = 1
 delta_B_N = 7 
@@ -103,38 +100,33 @@ def bestFirstSelectionSST(t):
 
 
 def main():
-    """Shows the map and lets you drive the car with WASD until the SST loop exists."""
-    pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
-    world = pygame.Surface(SCREEN_SIZE)  # full-size map; shrunk onto the window each frame
-    clock = pygame.time.Clock()
-    font = load_font()
-    car = Car(START[0], START[1])
+    """Shows first-demo and lets you drive merceves with WASD until the SST loop exists."""
+    import matplotlib.pyplot as plt
 
-    dt = 0.0
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+    config = cev_sim.configure(environment="first-demo", vehicle="merceves", goal=None)
+    held = set()
 
-        keys = pygame.key.get_pressed()
-        throttle = keys[pygame.K_w] - keys[pygame.K_s]
-        steer = keys[pygame.K_d] - keys[pygame.K_a]
-        car.set_acceleration(throttle * MAX_ACCELERATION)
-        car.set_steering_rate(steer * MAX_STEER_RATE)
-        car.update(dt)
+    def on_press(event):
+        if event.key:
+            held.add(event.key.lower())
 
-        world.fill("black")
-        draw_world(world)
-        car.draw(world)
+    def on_release(event):
+        if event.key:
+            held.discard(event.key.lower())
 
-        screen.blit(pygame.transform.smoothscale(world, WINDOW_SIZE), (0, 0))
-        draw_hud(screen, font, car)
-        pygame.display.flip()
-
-        dt = clock.tick(FPS) / 1000
-    pygame.quit()
+    sim = cev_sim.launch(config, render_mode="human")
+    try:
+        sim.reset(seed=1)
+        figure = plt.gcf()
+        figure.canvas.mpl_connect("key_press_event", on_press)
+        figure.canvas.mpl_connect("key_release_event", on_release)
+        while sim.loop() and plt.fignum_exists(figure.number):
+            speed = float(("w" in held) - ("s" in held))
+            steer = float(("d" in held) - ("a" in held))
+            sim.step(np.array([speed, steer], dtype=np.float32))
+    finally:
+        sim.close()
+        config.close()
 
 
 if __name__ == "__main__":

@@ -18,30 +18,25 @@
 
 \section{What we're doing}
 
-We have a car that needs to get from a start point to a target on a $2000 \times 1000$ pixel map
-full of circular obstacles. The target is a circle of radius 70 at $(1950, 700)$, and the car starts at
-$(20, 140)$. (We originally had the start at $(100, 100)$, but that turned out to be inside one of the
-obstacles, so nothing could ever grow out of it.)
-
-There are 377 obstacles in total: 161 bigger blue ones (``global'') and 216 smaller green ones
-(``local''). Right now the planner treats all of them as obstacles. Eventually the idea might be that
-the global planner only plans around the blue ones and something more local deals with the green ones,
-but we haven't done that yet.
+We have a car that needs to get from the start of the road to the end of it.
+\code{rrt.py} and \code{sst.py} load that world with \code{cev\_sim.configure} for the
+\code{first-demo} environment and the \code{merceves} vehicle. Positions are meters on the
+ground plane, $(x, z)$.
 
 So far we have a basic RRT working, and the car can drive along the path it finds. We've also started
 on SST, which plans with the car's actual motion instead of treating it as a point.
 
 The code is split into three files:
 \begin{itemize}
-  \item \code{world.py} has everything both planners need: the map, obstacles, the car model, collision
-    checking and drawing.
+  \item \code{world.py} is the old circle map. The runners still use its car helpers; the map comes
+    from \code{cev\_sim}.
   \item \code{rrt.py} is the RRT planner plus the code that makes the car follow the path.
     Run it with \code{python rrt.py}.
   \item \code{sst.py} is the SST work so far. It doesn't plan yet; running it just lets you drive the car
     around with WASD.
 \end{itemize}
-You need \code{pygame} and \code{numpy} installed. The window is shrunk to 70\% of the map size so it fits
-on a laptop screen.
+You need the \code{cev\_sim} package from the simulator checkout, plus \code{numpy} and
+\code{matplotlib}. The map window is the library's planner view.
 
 \section{The car}
 
@@ -52,8 +47,8 @@ $v$, and turning rate $\omega$. We control it with an acceleration $u_a$ and a s
   \dot x = v\cos\theta, \quad \dot y = v\sin\theta, \quad \dot\theta = \omega, \quad
   \dot v = u_a, \quad \dot\omega = u_\omega.
 \]
-Every frame we just step these forward by \code{dt}. Speed is capped at 300 px/s, acceleration at
-120 px/s$^2$, the turning rate at $180^\circ$/s and the steering rate at $360^\circ$/s$^2$.
+\code{rrt.py} still computes that heading rate. \code{cev\_sim} takes a speed fraction and a steering
+fraction, both in $[-1, 1]$, and the heading rate is turned into the steering fraction before \code{step}.
 
 The important thing here is that the car can't change how sharply it's turning instantly, since we only
 control how fast the turning rate changes. That ends up mattering a lot when we try to follow RRT's path.
