@@ -4,6 +4,10 @@ Toy homework where we are working on building up a global planner. Currently wor
 
 ## Files
 
-- `world.py`: shared map, obstacles, car model, collision checking and drawing
 - `rrt.py`: geometric RRT, with the car following the path (`python rrt.py`)
-- `sst.py`: SST for the car model, work in progress (`python sst.py` lets you drive the car with WASD)
+- `world.py`: map, obstacles, car model, collision checking and drawing used by `rrt.py`
+- `sst.py`: Andre's SST planner on the street map, with replanning around local obstacles (`python sst.py`).
+  Self-contained; it has its own map and car model and doesn't use `world.py`.
+- `path_library.npz`: saved paths that `sst.py` loads
+
+Requirements: `pygame` and `numpy` for both, plus `numba` for `sst.py`.

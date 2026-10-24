@@ -1,0 +1,14 @@
+obstacle_log/
+
+# Virtual environments
+.venv*/
+venv*/
+env/
+path/
+
+# Python / numba caches
+__pycache__/
+*.pyc
+
+# Big generated files (rebuilt automatically)
+maneuver_library.npz
