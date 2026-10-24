@@ -11,3 +11,5 @@ Toy homework where we are working on building up a global planner. Currently wor
 - `path_library.npz`: saved paths that `sst.py` loads
 
 Requirements: `pygame` and `numpy` for both, plus `numba` for `sst.py`.
+
+See [docs/planner.md](docs/planner.md) for how both planners work.
