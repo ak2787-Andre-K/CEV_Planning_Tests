@@ -12,7 +12,7 @@ We have two planners, and right now they each use their own map:
 - **RRT** (`rrt.py`) runs on the original map: 377 circles scattered everywhere, 161 bigger blue ones
   ("global") and 216 smaller green ones ("local"). It plans for a point, then a controller drives the
   car along the path.
-- **SST** (`sst.py`) runs on a street map: city blocks with roads between them, plus hidden obstacles
+- **SST** (`sst/`) runs on a street map: city blocks with roads between them, plus hidden obstacles
   on the roads that the car only finds out about when its lidar sees them. It plans with the car's
   actual motion, and replans while driving when the road turns out to be blocked.
 
@@ -22,10 +22,28 @@ The code:
 |---|---|---|
 | `rrt.py` | RRT and the path-following controller | `python rrt.py` |
 | `world.py` | The circle map, the car model, collision checking and drawing, used by `rrt.py` | (not run directly) |
-| `sst.py` | Andre's SST: street map, lidar, planner, replanning and the driver. Self-contained, doesn't use `world.py` | `python sst.py` |
-| `path_library.npz` | Saved paths that `sst.py` starts from | |
+| `sst/` | Andre's SST: street map, lidar, planner, replanning and the driver. Self-contained, doesn't use `world.py` | `python -m sst` |
+| `path_library.npz` | Saved paths that `sst` starts from | |
 
-You need `pygame` and `numpy` for both, and `numba` for `sst.py`.
+You need `pygame` and `numpy` for both, and `numba` for `sst`.
+
+`sst/` is split by job:
+
+| Module | What's in it |
+|---|---|
+| `config.py` | Every setting: map, car, planner, replanning and driver constants |
+| `streets.py` | Blocks, roads and obstacles, the signed distance field, hidden obstacles and the lidar |
+| `car.py` | The car model, its steering limit, and drawing it |
+| `tree.py` | States, edges, the witness and proximity maps, node selection and state distances |
+| `kinematics.py` | Propagation and clearance checks (compiled with numba), random actions, braking to a stop |
+| `global_planner.py` | `GlobalPlanner`, `planGlobal`, the grid heuristic, motion primitives, the replanning demo |
+| `route.py` | `Route`, and joining or splicing new states onto one |
+| `smoothing.py` | Shortcutting paths, and saving and loading `path_library.npz` |
+| `maneuvers.py` | Turnarounds and the maneuver library used to rejoin a route |
+| `driver.py` | `Driver`: follows a route and replans around what the lidar finds; the RRT fallback |
+| `__main__.py` | The demo window |
+
+The selection and witness radii that `planGlobal` anneals live on `config.radii`, so every module sees the current values.
 
 ---
 
@@ -165,11 +183,11 @@ distance field (how far each pixel is from the nearest obstacle), which makes co
 just look up a pixel. The car's body is covered by 3 small circles in a row, and a pose is safe if each
 circle's centre is at least its radius plus a 2 px safety margin away from anything.
 
-The old circle obstacle lists are still in `sst.py`, but nothing uses them.
+The old circle obstacle lists are still in `sst/streets.py`, but nothing uses them.
 
 ### The car
 
-`sst.py` has its own car model, closer to a real car than the one in `world.py`. It's a bicycle-style
+`sst/car.py` has its own car model, closer to a real car than the one in `world.py`. It's a bicycle-style
 model where we steer the front wheels:
 
 $$
@@ -233,7 +251,7 @@ The global planner treats unknown space as free, since it can't know about the h
 
 ### The path library
 
-Planning from scratch takes a while, so `sst.py` normally starts from saved paths in `path_library.npz`
+Planning from scratch takes a while, so `sst` normally starts from saved paths in `path_library.npz`
 (`PATH_LIBRARY_MODE = 'use'`). When building the library it plans a path, improves it, then drops random
 60 px blocks on the paths found so far and keeps planning on the same tree. That way the library ends up
 with several different routes, not just small variations of one. The paths are smoothed at the end and
@@ -265,7 +283,7 @@ The car drives the cheapest route while the lidar scans. The main ideas:
 ### Running it
 
 ```
-python sst.py
+python -m sst
 ```
 
 - The first run takes a bit longer because `numba` compiles its functions. The first time a replan needs
@@ -290,7 +308,7 @@ A few things to know:
 
 ## RRT vs. SST
 
-| | RRT (`rrt.py`) | SST (`sst.py`) |
+| | RRT (`rrt.py`) | SST (`sst/`) |
 |---|---|---|
 | Robot | a point that can move any way | the actual car |
 | Branches | straight 20 px lines | simulated driving with random controls |
