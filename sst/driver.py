@@ -1114,6 +1114,7 @@ class Driver:
             self.hold_index = None
         if self.s >= self.route.arc[-1] - 1e-6 and self.mode == 'follow':
             self.mode = 'done'
+            print('Driver: reached the goal', flush=True)
         # Dead replan (its start can't grow, e.g. the end of a committed branch facing a wall): don't wait on it forever
         if (self.replanner is not None and self.mode in ('replan', 'stop')
                 and self.replanner.it >= DEAD_REPLAN_ITERATIONS and len(self.replanner.tree.active) < DEAD_REPLAN_NODES):
@@ -1132,7 +1133,6 @@ class Driver:
                 self.event['stop_time'] += dt
             if self.mode in ('follow', 'done'):
                 self.closeEvent(self.resolution or ('reached the goal' if self.mode == 'done' else 'unknown'))
-            print('Driver: reached the goal', flush=True)
 
     def draw(self, surface, ghost):
         for r in self.routes:
