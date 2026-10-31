@@ -3,7 +3,7 @@
 use crate::config::{
     CHECK_SPACING, COST_ACCEL, COST_DECEL, COST_STEER_ANGLE, COST_STEER_RATE, EARLY_ACCEL_SIGMA, FOOTPRINT_OFFSETS,
     FOOTPRINT_RADIUS, FOOTPRINT_REACH, MAX_ACCELERATION, MAX_LATERAL_ACCELERATION, MAX_REVERSE_SPEED, MAX_SPEED,
-    MAX_STEER, MAX_STEER_RATE, PLAN_DT, SAFETY_MARGIN, TIME_PROP, WHEELBASE,
+    MAX_STEER, MAX_STEER_RATE, PLAN_DT, SAFE_SPEED_STEP, SAFETY_MARGIN, TIME_PROP, WHEELBASE,
 };
 use crate::map::Map;
 use crate::rng::Random;
@@ -163,4 +163,116 @@ pub fn monte_carlo_prop(map: &Map, rng: &mut Random, x: &State, steer_sigma: f64
     let frames = rng.randint(1, ((TIME_PROP / PLAN_DT).round() as usize).max(1));
     let action = random_action(rng, x, frames as f64 * PLAN_DT, steer_sigma, accel_mean);
     propagate(map, x, action, frames)
+}
+
+/// Like body_clearance, but unknown space counts as an obstacle too.
+pub fn known_clearance(map: &Map, x: f64, y: f64, a: f64) -> f64 {
+    let (s, c) = a.sin_cos();
+    let mut clearance = f64::INFINITY;
+    for offset in FOOTPRINT_OFFSETS {
+        match map.known_sdf((x + offset * c).round() as i64, (y + offset * s).round() as i64) {
+            Some(d) => clearance = clearance.min(d as f64 - FOOTPRINT_RADIUS),
+            None => return 0.0,
+        }
+    }
+    clearance
+}
+
+/// Whether every pose (x, y, heading) keeps SAFETY_MARGIN, from obstacles or (with unknown_too) also unknown space.
+pub fn poses_clear(map: &Map, poses: &[(f64, f64, f64)], unknown_too: bool) -> bool {
+    poses.iter().all(|&(x, y, a)| {
+        let c = if unknown_too { known_clearance(map, x, y, a) } else { body_clearance(map, x, y, a) };
+        c >= SAFETY_MARGIN
+    })
+}
+
+/// Whether every state keeps SAFETY_MARGIN from obstacles.
+pub fn path_is_clear(map: &Map, states: &[State]) -> bool {
+    states.iter().all(|s| body_clearance(map, s.x, s.y, s.a) >= SAFETY_MARGIN)
+}
+
+/// The emergency stops tried, gentlest first: full braking while turning the wheel at these steering rates.
+const STOP_RATES: [f64; 3] = [0.0, MAX_STEER_RATE, -MAX_STEER_RATE]; // straight, hard right, hard left
+
+/// Brake as hard as possible from pose (0, 0, heading 0) at forward `speed` and steering `steer`, turning the wheel at
+/// `rate` but never past the lateral limit. Returns the (x, y, heading) points after the start, spaced so every
+/// footprint circle moves at most CHECK_SPACING between them, the last one where the car stops.
+fn simulate_stop(speed: f64, mut steer: f64, rate: f64) -> Vec<(f64, f64, f64)> {
+    let (mut x, mut y, mut a, mut v) = (0.0, 0.0, 0.0, speed);
+    let mut out = Vec::new();
+    while v > 0.0 {
+        let t_move = PLAN_DT.min(v / MAX_ACCELERATION);
+        let limit = max_steer_at_speed(v);
+        steer = (steer + rate * PLAN_DT).clamp(-limit, limit);
+        let curvature = steer.tan() / WHEELBASE;
+        let steps = ((v * t_move * 1f64.hypot(FOOTPRINT_REACH * curvature) / CHECK_SPACING).ceil() as usize).max(1);
+        for i in 1..=steps {
+            let t = t_move * i as f64 / steps as f64;
+            out.push(arc_pose(x, y, a, curvature, v * t - MAX_ACCELERATION * t * t / 2.0));
+        }
+        (x, y, a) = *out.last().unwrap();
+        v -= MAX_ACCELERATION * t_move;
+        if v < 1e-9 {
+            v = 0.0;
+        }
+    }
+    out
+}
+
+/// The world poses of the stop at steering `rate` from state s (empty if s is already stopped). Braking in reverse
+/// traces the forward stop mirrored front to back.
+fn stop_poses(s: &State, rate: f64) -> Vec<(f64, f64, f64)> {
+    let (sn, c) = s.a.sin_cos();
+    simulate_stop(s.s.abs(), s.steer, rate)
+        .into_iter()
+        .map(|(x, y, h)| {
+            let (x, h) = if s.s < 0.0 { (-x, -h) } else { (x, h) };
+            (s.x + x * c - y * sn, s.y + x * sn + y * c, (s.a + h).rem_euclid(std::f64::consts::TAU))
+        })
+        .collect()
+}
+
+/// Whether the car, at this pose, speed (signed) and steering, can brake to a stop keeping SAFETY_MARGIN from
+/// obstacles and unknown space with one of the emergency stops. The pose itself must be clear too.
+pub fn can_stop_from(map: &Map, x: f64, y: f64, a: f64, speed: f64, steer: f64) -> bool {
+    if known_clearance(map, x, y, a) < SAFETY_MARGIN {
+        return false;
+    }
+    let s = State { steer, ..State::new(x, y, a, speed) };
+    STOP_RATES.iter().any(|&rate| poses_clear(map, &stop_poses(&s, rate), true))
+}
+
+/// The highest of p's planned speed and SAFE_SPEED_STEP steps below it (down to 0) from which the car can still stop
+/// before obstacles and unknown space, found by bisection (slower never stops later). 0 if even stopping at p isn't
+/// safe.
+pub fn safe_speed(map: &Map, p: &State) -> f64 {
+    let top = p.s.abs();
+    let mut speeds = vec![top];
+    let mut v = (top / SAFE_SPEED_STEP).floor() * SAFE_SPEED_STEP;
+    while v >= 0.0 {
+        if v < top {
+            speeds.push(v);
+        }
+        v -= SAFE_SPEED_STEP;
+    }
+    if *speeds.last().unwrap() != 0.0 {
+        speeds.push(0.0);
+    }
+    let sign = if p.s < 0.0 { -1.0 } else { 1.0 };
+    let ok = |i: usize| can_stop_from(map, p.x, p.y, p.a, sign * speeds[i], p.steer);
+    if !ok(speeds.len() - 1) {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = (0, speeds.len() - 1); // speeds[hi] is safe; find the first (fastest) safe one
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if ok(mid) { hi = mid } else { lo = mid + 1 }
+    }
+    speeds[lo]
+}
+
+/// Whether the car can brake to a stop from `s` with one of the emergency stops while keeping SAFETY_MARGIN from
+/// known obstacles (unknown space counts as free, as in planning).
+pub fn can_stop_clear(map: &Map, s: &State) -> bool {
+    STOP_RATES.iter().any(|&rate| poses_clear(map, &stop_poses(s, rate), false))
 }

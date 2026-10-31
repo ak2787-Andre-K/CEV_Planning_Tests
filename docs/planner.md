@@ -24,7 +24,7 @@ The code:
 | `world.py` | The circle map, the car model, collision checking and drawing, used by `rrt.py` | (not run directly) |
 | `sst/` | Andre's SST: street map, lidar, planner, replanning and the driver. Self-contained, doesn't use `world.py` | `python -m sst` |
 | `path_library.npz` | Saved paths that `sst` starts from | |
-| `sst_rs/` | The SST global planner in Rust, run as a zenoh node (see Part 3) | `cargo run --release --bin planner` |
+| `sst_rs/` | The SST planner (as a zenoh node) and the Driver in Rust (see Parts 3 and 4) | `cargo run --release --bin planner` / `--bin drive` |
 
 You need `pygame` and `numpy` for both, and `numba` for `sst`.
 
@@ -311,9 +311,8 @@ A few things to know:
 the tree, `GlobalPlanner` and `smoothPath`, with the same settings. It runs as a zenoh node: send it a
 start (and optionally a goal and some extra obstacles) and it sends back a smoothed path.
 
-The Driver (live replanning, the lidar, nudges, the maneuver library) is **not** ported yet. It's about
-half the Python code, it runs frame by frame instead of answering one request, and it's much harder to
-check, so it's a separate step.
+The Driver (live replanning, the lidar, nudges, the maneuver library) is ported too, but runs on its own
+for now, without zenoh: see Part 4.
 
 ### Same behavior, different numbers
 
@@ -416,6 +415,87 @@ The answer:
 - `cost` is after smoothing, `raw_cost` before; `time` is seconds of driving.
 - These are the same fields `path_library.npz` stores per state, so a path from Rust has everything
   the Python Driver needs.
+
+---
+
+## Part 4: The Driver in Rust
+
+`sst_rs/` also has the **Driver** from `sst/driver.py`: it drives the car along the best route while the
+lidar reveals hidden obstacles, and gets past whatever blocks the road. The logic is the Python Driver's,
+step for step:
+
+- the same speed limits (brake in time for the next nodes' safe speeds, never into unknown space),
+- the same reactions to a blocked route: a nudge, a reconnect, or a replan from a bit before the blockage
+  (or a stop if there's no room for that),
+- the same fallbacks once stopped: forward tests, a library maneuver, a reconnect, committing to a branch
+  of the replan tree, backing up,
+- the same route improvements while nothing is blocked,
+
+with the same settings. Left out: the geometric RRT fallback (it's switched off in Python too), the
+obstacle log, and drawing. It isn't on zenoh yet.
+
+To run it, `drive` does what the Python demo does, without a window: hidden obstacles, a lidar scan from
+the car every 1/20 s, and the Driver on `path_library.npz`, one drive per world seed:
+
+```
+cargo run --release --bin drive -- --seeds 20             # seeds 0..19, one JSON line per drive
+cargo run --release --bin drive -- --first 7 --verbose    # one drive, printing what the Driver does
+```
+
+### Same behavior, different numbers
+
+As with the planner, Rust draws different random numbers, and the same seed also gives a different
+obstacle layout. So we compared many drives on random layouts: 29 in Python and 100 in Rust.
+
+| | Python | Rust |
+|---|---|---|
+| Reached the goal | 97% (28 of 29) | 100% |
+| Drive time, median (middle half) | 15.3 s (12.8-19.2) | 14.3 s (12.0-18.3) |
+| Replans per drive, median (mean) | 5 (5.5) | 5 (5.5) |
+| Drives with a nudge past an obstacle | 62% | 65% |
+| Drives with a reconnect | 72% | 70% |
+| Drives that committed to a replan branch | 17% | 19% |
+| Route improvements per drive, median | 8 | 7 |
+| Real time per drive, median | 144 s | 14 s |
+
+The last row ran with 4-5 drives at once on one laptop, so the ratio is rough, but it's the important one
+for a real car: Python simulates about 10× slower than real time, Rust about real time even sharing the CPU.
+
+Two things the comparison turned up:
+
+- **The lidar has to fill its view the way pygame does.** pygame's polygon fill also colors the outline,
+  which takes in the 1.5 px each ray reaches into what it hit. Without that, hidden obstacles showed up a
+  pixel or two thinner in Rust. `World::scan` now copies pygame's fill, and one scan matches Python's to
+  within about 1%.
+- **The Python Driver can crash (`IndexError` in `hardStopArc`).** A reconnect from rest sets a hold point
+  (the car comes to rest there first), and if a route improvement replaces the route in the same frame, the
+  hold still points into the old, longer route: Python only drops it at the start of the next frame. It
+  happened once in 30 Python drives (seed 13) and twice in 100 Rust drives before the fix. Rust now drops a
+  hold as soon as its route is replaced. The Python Driver still has the bug.
+
+### The code
+
+| File | What's in it | Python version |
+|---|---|---|
+| `driver.rs` | `Driver`: following, blockages, replans, stops, improvements | `driver.py` |
+| `world.rs` | Hidden obstacles and the simulated lidar | `LocalObstacleMap` in `streets.py` |
+| `map.rs` | Also: unknown space, its distance field, and merging scans in | `SDFState` in `streets.py` |
+| `kinematics.rs` | Also: the emergency stops (`can_stop_from`, `safe_speed`, `can_stop_clear`) | `kinematics.py` |
+| `maneuvers.rs` | Turnarounds, the maneuver library and `library_join` | `maneuvers.py` |
+| `planner.rs` | Also: `Guide`, the hooks a replanner uses, and the turn primitives | `GlobalPlanner` options |
+| `library.rs` | Reading `path_library.npz` | `loadPathLibrary` |
+| `bin/drive.rs` | The headless drive | `main()` in `__main__.py` |
+
+A few things are organized differently because of Rust:
+
+- **Planner hooks.** Python gives `GlobalPlanner` functions to call (`h_fn`, `sample_fn`, `edge_filter`,
+  `child_hook`) that read and change the Driver. In Rust these are one `Guide` passed to each planner step,
+  and the Driver keeps everything they need in one place (`Ctx`), apart from the map and the planners.
+- **Routes** are shared (`Rc<Route>`), and "is this the same route" is a pointer check, like Python's `is`.
+- **The maneuver library** (about 10 million entries, 20 s to build) is built in the background when a drive
+  starts, instead of being saved to `maneuver_library.npz`.
+- **The emergency stops** are the same three for every speed and steering (straight, hard right, hard left):
+  Python's bins all hold that same list.
 
 ---
 
