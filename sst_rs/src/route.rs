@@ -3,7 +3,10 @@ use crate::config::{
     CHECK_SPACING, COST_STEER_ANGLE, JOIN_SPEED_OVER, MAX_LATERAL_ACCELERATION, MAX_STEER, MAX_STEER_RATE,
     SAFETY_MARGIN, WHEELBASE,
 };
-use crate::kinematics::wrap;
+use std::cell::Cell;
+
+use crate::kinematics::{body_clearance, known_clearance, wrap};
+use crate::map::Map;
 use crate::tree::State;
 
 /// A drivable path: states (the start, then check points) into the goal region, which of them are tree nodes, the
@@ -13,6 +16,8 @@ pub struct Route {
     pub nodes: Vec<usize>,
     pub arc: Vec<f64>,
     pub remaining: Vec<f64>,
+    /// States before this are cut off by an obstacle; the rest still reach the goal.
+    pub valid_from: Cell<usize>,
 }
 
 impl Route {
@@ -25,7 +30,39 @@ impl Route {
         }
         let end = states.last().map_or(0.0, |s| s.cost);
         let remaining = remaining.unwrap_or_else(|| states.iter().map(|p| end - p.cost).collect());
-        Route { states, nodes, arc, remaining }
+        Route { states, nodes, arc, remaining, valid_from: Cell::new(0) }
+    }
+
+    /// Which states now lack SAFETY_MARGIN of clearance from obstacles, or with unknown_too from obstacles or unknown
+    /// space.
+    pub fn blocked(&self, map: &Map, unknown_too: bool) -> Vec<bool> {
+        self.states
+            .iter()
+            .map(|p| {
+                let c = if unknown_too { known_clearance(map, p.x, p.y, p.a) } else { body_clearance(map, p.x, p.y, p.a) };
+                c < SAFETY_MARGIN
+            })
+            .collect()
+    }
+
+    /// Indices of the blocked states (see blocked).
+    pub fn blocked_indices(&self, map: &Map, unknown_too: bool) -> Vec<usize> {
+        self.blocked(map, unknown_too).iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect()
+    }
+
+    /// Index of the last state at or before arc length s.
+    pub fn index_at(&self, s: f64) -> usize {
+        self.arc.partition_point(|&a| a <= s).saturating_sub(1)
+    }
+
+    /// (x, y, heading, planned speed, steering) at arc length s, interpolated.
+    pub fn pose_at(&self, s: f64) -> (f64, f64, f64, f64, f64) {
+        let i = self.index_at(s).min(self.states.len() - 2);
+        let (a, b) = (&self.states[i], &self.states[i + 1]);
+        let length = self.arc[i + 1] - self.arc[i];
+        let f = if length == 0.0 { 0.0 } else { ((s - self.arc[i]) / length).clamp(0.0, 1.0) };
+        (a.x + f * (b.x - a.x), a.y + f * (b.y - a.y), a.a + f * wrap(b.a - a.a), a.s + f * (b.s - a.s),
+         a.steer + f * (b.steer - a.steer))
     }
 }
 
@@ -72,16 +109,18 @@ pub fn route_join(n: &State, route: &Route, lo: usize, hi: usize, scale: f64) ->
 }
 
 /// A Route that follows prefix.states[..=upto], then new_states (planned from prefix.states[upto], costs counted
-/// from 0), then join's states after join_index.
-pub fn splice_route(prefix: &Route, upto: usize, new_states: Vec<State>, join: &Route, join_index: usize) -> Route {
-    let join_rem = join.remaining[join_index];
+/// from 0), then join's states after its index (or nothing if join is None: new_states reach the goal).
+pub fn splice_route(prefix: &Route, upto: usize, new_states: Vec<State>, join: Option<(&Route, usize)>) -> Route {
+    let join_rem = join.map_or(0.0, |(r, j)| r.remaining[j]);
     let new_end = new_states.last().map_or(0.0, |s| s.cost);
     let mut remaining: Vec<f64> =
         (0..=upto).map(|i| prefix.remaining[i] - prefix.remaining[upto] + new_end + join_rem).collect();
     remaining.extend(new_states.iter().map(|p| new_end - p.cost + join_rem));
-    remaining.extend(&join.remaining[join_index + 1..]);
     let mut states = prefix.states[..=upto].to_vec();
     states.extend(new_states);
-    states.extend(&join.states[join_index + 1..]);
+    if let Some((r, j)) = join {
+        remaining.extend(&r.remaining[j + 1..]);
+        states.extend(&r.states[j + 1..]);
+    }
     Route::new(states, Some(remaining))
 }
