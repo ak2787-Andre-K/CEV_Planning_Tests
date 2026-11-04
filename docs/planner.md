@@ -24,6 +24,7 @@ The code:
 | `world.py` | The circle map, the car model, collision checking and drawing, used by `rrt.py` | (not run directly) |
 | `sst/` | Andre's SST: street map, lidar, planner, replanning and the driver. Self-contained, doesn't use `world.py` | `python -m sst` |
 | `path_library.npz` | Saved paths that `sst` starts from | |
+| `sst_rs/` | The SST global planner in Rust, run as a zenoh node (see Part 3) | `cargo run --release --bin planner` |
 
 You need `pygame` and `numpy` for both, and `numba` for `sst`.
 
@@ -303,6 +304,118 @@ A few things to know:
   0.000 s".
 - Every new blockage gets logged to an `obstacle_log/` folder (`OBSTACLE_LOG = True`). It's in
   `.gitignore`.
+
+## Part 3: SST in Rust
+
+`sst_rs/` is the SST **global planner** from `sst/` rewritten in Rust: the street map, the car model,
+the tree, `GlobalPlanner` and `smoothPath`, with the same settings. It runs as a zenoh node: send it a
+start (and optionally a goal and some extra obstacles) and it sends back a smoothed path.
+
+The Driver (live replanning, the lidar, nudges, the maneuver library) is **not** ported yet. It's about
+half the Python code, it runs frame by frame instead of answering one request, and it's much harder to
+check, so it's a separate step.
+
+### Same behavior, different numbers
+
+Rust can't draw the same random numbers as Python, so the same seed gives a different path. What
+matters is that the planner behaves the same, so we compared both at 30,000 iterations over many seeds
+(40 seeds in Python, 300 in Rust):
+
+| | Python | Rust |
+|---|---|---|
+| Found a path | 85% | 93% |
+| Iteration of the first path (median) | 10,055 | 12,288 |
+| Cost when found early (first 10,000 iterations, median) | 9.61 | 9.62 |
+| Cost after smoothing (median) | 8.22 | 8.25 |
+| Driving time after smoothing (median) | 8.03 s | 8.03 s |
+| Time for 30,000 iterations | ~2 s | ~0.25 s |
+
+So paths come out as good, and Rust is about 8× faster (100,000 iterations take about 2 s). We also
+checked a Rust path with Python's own collision check: its tightest spot is 5.9 px from an obstacle,
+against the 2 px safety margin.
+
+One quirk carried over from Python: when smoothing's last shortcut joins at the path's final state, the
+path ends where the shortcut ends, which can be a few px short of it, so just outside the goal circle
+(we've seen 73 px from the center with a 70 px radius). Python's `spliceRoute` does the same.
+
+### The code
+
+| File | What's in it | Python version |
+|---|---|---|
+| `config.rs` | The settings the planner uses | `config.py` |
+| `map.rs` | Blocks, roads and extra obstacles, and the distance field to them | `streets.py` |
+| `kinematics.rs` | Steering limits, random actions, `propagate` with its collision checks | `car.py`, `kinematics.py` |
+| `tree.rs` | States, the tree with SST's witness step and pruning, the witness map, selection | `tree.py` |
+| `planner.rs` | The grid heuristic, primitives, `Planner` (g + h expansion, annealing) | `global_planner.py` |
+| `route.rs` | `Route`, joining and splicing | `route.py` |
+| `smoothing.rs` | Hermite shortcuts and `smooth_path` | `smoothing.py` |
+| `rng.rs` | The random draws, named like Python's `random` | |
+| `lib.rs` | `plan()`, the zenoh messages and the zenoh config | |
+
+Tree nodes live in one list and point to each other by index, instead of Python objects pointing to
+each other. The annealed radii are plain fields on the planner, since there's only one planner.
+
+### Running it
+
+In `sst_rs/`:
+
+```
+cargo run --release --bin planner                    # the zenoh node; add --verbose to see its progress
+cargo run --release --bin request                    # test client: one request, prints the answer
+cargo run --release --bin plan -- --seeds 20         # no zenoh: plan with seeds 0..19, one JSON line each
+cargo test --release
+```
+
+`request` takes `--seed <n>`, `--iterations <n>` and `--no-smooth`. `plan` takes `--seeds`, `--iterations`,
+`--no-smooth`, and `--out <file>` to save the last plan's full answer.
+
+If the two nodes can't find each other (multicast is blocked on some networks), start the planner with
+`--listen tcp/0.0.0.0:7447` and the client with `--connect tcp/<planner ip>:7447`.
+
+### Talking to it over zenoh
+
+The planner listens on **`cev/planner/sst/request`** and answers on **`cev/planner/sst/path`**, in JSON.
+Every field of a request is optional; anything left out uses the `sst` default:
+
+```json
+{
+  "id": 7,
+  "start": [250, 100],
+  "start_heading": 0.0,
+  "goal": [1950, 700],
+  "goal_radius": 70,
+  "iterations": 100000,
+  "seed": 3,
+  "smooth": true,
+  "obstacles": [
+    {"type": "circle", "x": 980, "y": 400, "radius": 15},
+    {"type": "box", "x": 620, "y": 250, "length": 30, "width": 12, "angle": 0.5}
+  ]
+}
+```
+
+- `id` comes back in the answer, so a client can pick out its own. The planner skips repeats of a
+  nonzero `id` it has already answered, so a client can resend until it hears back (`request` does).
+- `obstacles` are added to the street map for this request only. Shapes are `circle`, `box` (rotated
+  rectangle, optional `angle` and `corner`), `block` and `road`, in map pixels.
+- Headings are in radians, 0 = facing +x, positive = clockwise on screen (y points down).
+
+The answer:
+
+```json
+{
+  "id": 7, "found": true, "cost": 7.92, "raw_cost": 8.91, "time": 7.72,
+  "path": [{"x": 250.0, "y": 100.0, "heading": 0.0, "speed": 0.0, "steer": 0.0,
+            "cost": 0.0, "time": 0.0, "node": true}, "..."],
+  "iterations": 100000, "found_at": 15039, "active_nodes": 25361, "plan_ms": 2138.0, "smooth_ms": 227.0
+}
+```
+
+- `path` runs from the start into the goal region, one state per collision check point (a few px
+  apart), with `node` marking the tree nodes. It's empty when `found` is false.
+- `cost` is after smoothing, `raw_cost` before; `time` is seconds of driving.
+- These are the same fields `path_library.npz` stores per state, so a path from Rust has everything
+  the Python Driver needs.
 
 ---
 
