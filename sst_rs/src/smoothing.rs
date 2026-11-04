@@ -14,7 +14,7 @@ use crate::tree::State;
 
 /// Whether the stretch of `route` from node index a to a later node at most LOOP_SPAN px further along is a loop or
 /// big wiggle: driven at least LOOP_DETOUR_RATIO times the straight line across, or turning through LOOP_TURN.
-fn route_loopy(route: &Route, a: usize) -> bool {
+pub fn route_loopy(route: &Route, a: usize) -> bool {
     let k = route.nodes.iter().position(|&n| n == a).unwrap();
     let p = &route.states[a];
     let (mut turning, mut last) = (0.0, a);
@@ -55,21 +55,21 @@ fn hermite_curve(p: &State, q: &State, tangent: f64) -> (Vec<(f64, f64)>, Vec<f6
 }
 
 /// A shortcut that rejoins the route: total cost to the goal, its states, the route index it joins at, the gap cost.
-struct Shortcut {
-    total: f64,
-    states: Vec<State>,
-    join: usize,
-    gap: f64,
+pub struct Shortcut {
+    pub total: f64,
+    pub states: Vec<State>,
+    pub join: usize,
+    pub gap: f64,
 }
 
 /// Drive from route state p (index a) along a Hermite curve to route state q with pure pursuit (`lookahead` px ahead
 /// on the curve), the speed going linearly from p's to q's plus `bump` times the faster in the middle, the steering
 /// blended toward q's over the last SMOOTH_STEER_BLEND. Every PLAN_DT step goes through propagate, so the planner's
-/// limits and collision checks apply. Past half way, each step is checked for a join (indices a+1 to hi). Returns
-/// the cheapest join.
+/// limits and collision checks apply. Past half way, each step is checked for a join within `scale` of the join
+/// tolerance (indices a+1 to hi). Returns the cheapest join.
 #[allow(clippy::too_many_arguments)]
-fn shortcut_drive(map: &Map, p: &State, q: &State, route: &Route, a: usize, hi: usize, tangent: f64, lookahead: f64,
-                  bump: f64) -> Option<Shortcut> {
+pub fn shortcut_drive(map: &Map, p: &State, q: &State, route: &Route, a: usize, hi: usize, tangent: f64,
+                      lookahead: f64, bump: f64, scale: f64) -> Option<Shortcut> {
     let (points, arcs) = hermite_curve(p, q, tangent);
     let length = *arcs.last().unwrap();
     if length < 1.0 {
@@ -122,7 +122,7 @@ fn shortcut_drive(map: &Map, p: &State, q: &State, route: &Route, a: usize, hi: 
         states.extend(&seg);
         x = *seg.last().unwrap();
         if f >= 0.5
-            && let Some((i, gap)) = route_join(&x, route, a + 1, hi, SMOOTH_TOLERANCE_SCALE) {
+            && let Some((i, gap)) = route_join(&x, route, a + 1, hi, scale) {
                 let total = x.cost + gap + route.remaining[i];
                 if best.as_ref().is_none_or(|b| total < b.total) {
                     best = Some(Shortcut { total, states: states.clone(), join: i, gap });
@@ -171,7 +171,8 @@ fn smooth_route(map: &Map, mut route: Route) -> (Route, usize) {
             for tangent in SMOOTH_TANGENTS {
                 for lookahead in SMOOTH_LOOKAHEADS {
                     for bump in SMOOTH_BUMPS {
-                        if let Some(found) = shortcut_drive(map, &p, &q, &route, a, hi, tangent, lookahead, bump)
+                        if let Some(found) = shortcut_drive(map, &p, &q, &route, a, hi, tangent, lookahead, bump,
+                                                                    SMOOTH_TOLERANCE_SCALE)
                             && best.as_ref().is_none_or(|b| found.total < b.total) {
                                 best = Some(found);
                             }
@@ -184,7 +185,7 @@ fn smooth_route(map: &Map, mut route: Route) -> (Route, usize) {
                 let last = states.last_mut().unwrap();
                 last.node = true;
                 last.cost += gap; // the bit from the shortcut's end on to the join, so the route's costs stay right
-                route = splice_route(&route, a, states, &route, join);
+                route = splice_route(&route, a, states, Some((&route, join)));
                 made += 1;
                 tries_here += 1;
                 if tries_here < SMOOTH_RETRIES {

@@ -225,6 +225,7 @@ dependencies = [
 name = "cev_sst"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "rand 0.10.3",
  "serde",
  "serde_json",

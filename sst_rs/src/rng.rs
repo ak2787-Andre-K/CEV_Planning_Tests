@@ -9,6 +9,11 @@ impl Random {
         Random(StdRng::seed_from_u64(seed))
     }
 
+    /// A fresh seed, for a planner of its own.
+    pub fn next_u64(&mut self) -> u64 {
+        self.0.random::<u64>()
+    }
+
     /// Uniform in [0, 1).
     pub fn random(&mut self) -> f64 {
         self.0.random::<f64>()

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{MAX_REVERSE_SPEED, MAX_SPEED, SCREEN_HEIGHT, SCREEN_WIDTH, W_A, W_ST, W_V};
 use crate::kinematics::{max_steer_at_speed, wrap};
-use crate::map::{Map, cell};
+use crate::map::Map;
 use crate::rng::Random;
 
 /// A car state: rear-axle pose, speed, steering, and the cost and driving time from the root.
@@ -245,7 +245,7 @@ impl Tree {
 
     /// The cheapest rep within delta_b_n of s, or None. Every such rep belongs to a witness within
     /// delta_b_n + delta_s of s (a rep sits within delta_s of its witness).
-    fn best_near(&self, witnesses: &WitnessMap, s: &State, delta_b_n: f64, delta_s: f64) -> Option<usize> {
+    pub fn best_near(&self, witnesses: &WitnessMap, s: &State, delta_b_n: f64, delta_s: f64) -> Option<usize> {
         witnesses
             .nbhd(s, delta_b_n + delta_s)
             .into_iter()
@@ -255,7 +255,7 @@ impl Tree {
     }
 
     /// The rep closest to s, over every witness.
-    fn nearest_active(&self, witnesses: &WitnessMap, s: &State) -> Option<usize> {
+    pub fn nearest_active(&self, witnesses: &WitnessMap, s: &State) -> Option<usize> {
         witnesses
             .witnesses
             .iter()
@@ -266,8 +266,12 @@ impl Tree {
     /// SST's best-first selection: sample a random state and pick the cheapest active node within delta_b_n of it, or
     /// the nearest active node if none is that close.
     pub fn select(&self, map: &Map, rng: &mut Random, witnesses: &WitnessMap, delta_b_n: f64, delta_s: f64) -> Option<usize> {
-        let sample = random_state(map, rng);
-        self.best_near(witnesses, &sample, delta_b_n, delta_s).or_else(|| self.nearest_active(witnesses, &sample))
+        self.select_near(witnesses, &random_state(map, rng), delta_b_n, delta_s)
+    }
+
+    /// Best-first selection for a given sample.
+    pub fn select_near(&self, witnesses: &WitnessMap, sample: &State, delta_b_n: f64, delta_s: f64) -> Option<usize> {
+        self.best_near(witnesses, sample, delta_b_n, delta_s).or_else(|| self.nearest_active(witnesses, sample))
     }
 }
 
@@ -279,7 +283,7 @@ pub fn random_state(map: &Map, rng: &mut Random) -> State {
         x = rng.uniform(0.0, SCREEN_WIDTH as f64);
         y = rng.uniform(0.0, SCREEN_HEIGHT as f64);
         let (px, py) = ((x as usize).min(SCREEN_WIDTH - 1), (y as usize).min(SCREEN_HEIGHT - 1));
-        if !map.occupied[cell(px, py)] {
+        if !map.occupied(px, py) {
             break;
         }
     }

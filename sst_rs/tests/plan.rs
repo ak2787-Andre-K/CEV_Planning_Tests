@@ -24,8 +24,8 @@ fn assert_valid(map: &Map, response: &PlanResponse) {
 #[test]
 fn street_map_has_roads_and_blocks() {
     let map = Map::streets(&[]);
-    assert!(!map.occupied[cell(START.0 as usize, START.1 as usize)]); // the start is on a road
-    assert!(map.occupied[cell(430, 240)]); // the middle of a city block
+    assert!(!map.occupied(START.0 as usize, START.1 as usize)); // the start is on a road
+    assert!(map.occupied(430, 240)); // the middle of a city block
     assert_eq!(map.obstacle_sdf[cell(430, 240)], 0.0);
     assert_eq!(map.obstacle_sdf[cell(START.0 as usize, START.1 as usize)], 20.0); // capped, 40 px from the curbs
 }

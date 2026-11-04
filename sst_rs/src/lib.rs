@@ -3,13 +3,17 @@
 //! Same map, car model, planner and smoothing as the Python package, with the same settings. Its random draws differ
 //! from Python's, so a seed doesn't give the same path as in Python, but the planner behaves the same way.
 pub mod config;
+pub mod driver;
 pub mod kinematics;
+pub mod library;
+pub mod maneuvers;
 pub mod map;
 pub mod planner;
 pub mod rng;
 pub mod route;
 pub mod smoothing;
 pub mod tree;
+pub mod world;
 
 use std::time::Instant;
 
@@ -17,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use config::{MAX_PLAN_ITERATIONS, START, START_HEADING, TARGET, TARGET_RAD};
 use map::{Map, Shape};
-use planner::Planner;
+use planner::{GoalGrid, Planner};
 use tree::State;
 
 /// Key expressions the planner node uses.
@@ -76,9 +80,10 @@ pub fn plan(streets: &Map, request: &PlanRequest, verbose: bool) -> PlanResponse
     let seed = request.seed.unwrap_or_else(rand::random);
 
     let timer = Instant::now();
-    let mut planner = Planner::new(map, start, goal, seed);
+    let mut guide = GoalGrid::new(map, goal);
+    let mut planner = Planner::new(start, goal, seed, &mut guide);
     planner.verbose = verbose;
-    planner.run(request.iterations.unwrap_or(MAX_PLAN_ITERATIONS));
+    planner.run(map, &mut guide, request.iterations.unwrap_or(MAX_PLAN_ITERATIONS));
     let plan_ms = timer.elapsed().as_secs_f64() * 1000.0;
 
     let timer = Instant::now();

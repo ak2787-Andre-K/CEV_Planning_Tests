@@ -98,3 +98,110 @@ pub const STREET_WIDTH: f64 = 80.0;
 pub const BLOCK_CORNER: f64 = 15.0; // rounded block corners, px
 pub const DIAGONALS: [((f64, f64), (f64, f64)); 2] =
     [((0.0, 1000.0), (980.0, 100.0)), ((1330.0, 100.0), (2000.0, 760.0))];
+
+// Occupancy grid cell states
+pub const FREE: u8 = 0;
+pub const OCCUPIED: u8 = 1;
+pub const UNKNOWN: u8 = 2;
+pub const DIRTY_TILE: usize = 50; // px, map updates are grouped on a grid this coarse
+
+// Hidden obstacles on the roads, found by the lidar while driving
+pub const LOCAL_OBSTACLE_COUNT: usize = 60;
+pub const LOCAL_OBSTACLE_RADIUS: (f64, f64) = (7.0, 20.0); // px, min/max for circles
+pub const LOCAL_BOX_LENGTH: (f64, f64) = (15.0, 45.0); // px, min/max for boxes
+pub const LOCAL_BOX_WIDTH: (f64, f64) = (8.0, 20.0);
+pub const BLOCKED_ROADS: usize = 2; // road segments fully blocked by one big obstacle
+pub const LIDAR_BEAMS: usize = 3600; // long range, so fine angular steps: ~1.7 px apart at 1000 px
+pub const LIDAR_DT: f64 = 1.0 / 20.0; // s between lidar scans
+pub const FPS: f64 = 60.0; // display frames per second the Driver's timings assume
+
+// Driving the planned routes (Driver)
+pub const SAFE_SPEED_NODES: usize = 3; // tree nodes ahead whose safe speed limits the car
+pub const SAFE_SPEED_STEP: f64 = 10.0; // px/s, steps a node's speed is lowered in until the car can stop from it
+pub const REPLAN_BACK_NODES: usize = 3; // a replan starts this many nodes before the last safe node
+pub const REPLAN_ITERATIONS_PER_FRAME: usize = 500; // planning budget per display frame while replanning or improving
+pub const MOTION_DT: f64 = 1.0 / 120.0; // s, longest step the car moves in one go
+pub const CREEP_SPEED: f64 = 5.0; // px/s, least target speed while the safe-speed limit allows it
+pub const JOIN_TOLERANCE_SCALE: f64 = 1.0; // live joins use join_tolerance as is
+// A node within NEAR_JOIN_SCALE times the join tolerances of a route is a near miss: NEAR_FOCUS_SHARE of the samples
+// then go onto that route NEAR_LOOKAHEAD states ahead of it, so it can line up
+pub const NEAR_JOIN_SCALE: f64 = 3.0;
+pub const NEAR_FOCUS_SHARE: f64 = 0.5;
+pub const NEAR_LOOKAHEAD: usize = 3; // route states
+pub const NEAR_SAMPLE_SIGMA: f64 = 5.0; // px
+// The normal-SST share of a replan samples in a circle around the car, growing while no join is found
+pub const REPLAN_SAMPLE_RADIUS: f64 = 150.0; // px to start
+pub const REPLAN_SAMPLE_GROWTH: f64 = 1.5; // radius factor...
+pub const REPLAN_SAMPLE_GROW_EVERY: usize = 500; // ...every this many replanner iterations
+// Replans focus on nodes that got past the obstacle (within PAST_RADIUS of the route, PAST_BEYOND past the blockage)
+pub const PAST_RADIUS: f64 = 30.0; // px
+pub const PAST_BEYOND: f64 = 40.0; // px
+pub const PAST_FOCUS_SHARE: f64 = 0.8;
+pub const PAST_LOOKAHEAD: usize = 5; // route states
+pub const PAST_SAMPLE_SIGMA: f64 = 10.0; // px
+// Improving the route while driving: plan again from the start of the next very squiggly edge ahead
+pub const SQUIGGLY_STEER_FRACTION: f64 = 0.6; // mean |steering| / (most allowed) of a very squiggly edge
+pub const IMPROVE_SKIP_FRAMES: f64 = 5.0; // skip a squiggly edge the car reaches within this many frames
+pub const IMPROVE_MIN_GAIN: f64 = 0.02; // an improvement must be at least this fraction cheaper
+// Before a full replan, nudge the route: re-drive it with a lane-change-shaped steering offset past the obstacle
+pub const NUDGE_VARIANTS: usize = 5;
+pub const NUDGE_SHIFT_LENGTH: f64 = 120.0; // px of route a nudge uses to shift sideways, ending where the obstacle starts
+pub const NUDGE_BACK_LENGTH: f64 = 60.0; // px after the obstacle to shift back onto the route
+pub const STOP_FAN_TESTS: usize = 50; // once stopped with no new route: forward tests from rest at different angles...
+pub const STOP_FAN_FRACTION: f64 = 0.5; // ...with offsets over +-this fraction of the allowed steering
+pub const STALL_REPLAN_TIME: f64 = 2.0; // s stopped while just following a route before replanning from there
+// Turnarounds: tried from a replan node near a route but facing almost the opposite way. Phases: (steering as a
+// fraction of the most allowed at TURN_SPEED, target speed, total heading change to stop at)
+pub const TURN_SPEED: f64 = 25.0; // px/s
+pub const TURN_NEAR_RADIUS: f64 = 25.0; // px
+pub const TURN_HEADING_TOL: f64 = 35.0 * PI / 180.0;
+pub const TURN_MAX_ENTRY_SPEED: f64 = 120.0; // px/s
+pub const TURNAROUND_MANEUVERS: [&[(f64, f64, f64)]; 3] = [
+    &[(-1.0, TURN_SPEED, PI)], // u-turn left
+    &[(1.0, TURN_SPEED, PI)],  // u-turn right
+    &[(-1.0, TURN_SPEED, 70.0 * PI / 180.0), (1.0, -TURN_SPEED, 130.0 * PI / 180.0), (-1.0, TURN_SPEED, PI)], // 3-point
+];
+// Turn primitives, once the car has been stuck at rest for TURN_PRIMITIVE_STUCK_TIME: brake to each speed and turn
+// left and right by TURN_PRIMITIVE_ANGLE at the most steering that speed allows
+pub const TURN_PRIMITIVE_STUCK_TIME: f64 = 5.0; // s
+pub const TURN_PRIMITIVE_SPEEDS: [f64; 3] = [30.0, 60.0, 90.0]; // px/s
+pub const TURN_PRIMITIVE_ANGLE: f64 = PI / 2.0;
+pub const TURN_PRIMITIVE_MAX_BRAKE: f64 = 0.6; // s; skip a corner speed that takes longer than this to reach
+pub const TURN_PRIMITIVE_MAX_FRAMES: usize = 240; // PLAN_DT steps, cap on one turn primitive
+// Maneuver library: every sequence of LIB_DEPTH steps of LIB_STEP_FRAMES frames with full brake / coast / throttle
+// and full-left / held / full-right steering rate, from each LIB_SPEEDS start, the fastest into each end bin
+pub const LIB_SPEEDS: [f64; 16] =
+    [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0];
+pub const LIB_STEP_FRAMES: usize = 20; // PLAN_DT frames per control step (0.25 s)
+pub const LIB_DEPTH: usize = 12; // steps (3 s)
+pub const LIB_MIN_SPEED: f64 = 8.0; // px/s; maneuvers never slow below this
+pub const LIB_BINS: (f64, f64, f64, f64) = (3.0, 10.0 * PI / 180.0, 20.0, 7.0 * PI / 180.0); // dedup bins
+pub const LIB_KEY_CELL: (f64, f64) = (3.0, 10.0 * PI / 180.0); // lookup bins of end position and heading
+pub const LIB_CANDIDATES: usize = 20; // best predicted entries re-driven from the real state per try
+pub const LIB_TARGET_OFFSETS: [i64; 7] = [-6, -3, 0, 3, 6, 9, 12]; // route states around the chosen one looked up
+pub const LIB_TRIES_EVERY: usize = 500; // a replan tries the library at most once per this many iterations
+// Stuck at a stop (or about to stop while replanning, NONSTOP): drive the most promising branch of the replan tree,
+// picked by k-means grouping of the best GROUP_SAMPLES branches' end states
+pub const GROUP_STUCK_TIME: f64 = 5.0; // s
+pub const GROUP_SAMPLES: usize = 100;
+pub const GROUP_K: usize = 4;
+pub const GROUP_MIN_SIZE: usize = 5;
+pub const GROUP_HEADING_SCALE: f64 = 40.0; // px per unit of (cos, sin) heading in the end-state features
+pub const GROUP_BACK_NODES: usize = 2;
+pub const GROUP_MIN_DISTANCE: f64 = 120.0; // px; only branches ending at least this far from the car
+pub const GROUP_SPEED_SCALE: f64 = 1.0; // the committed branch is driven at this fraction of its planned speed
+pub const GROUP_RETRY_INTERVAL: f64 = 0.25; // s between tries to chain the next branch on while driving one
+pub const GROUP_PAST_FIRST: bool = false; // false: always the grouping's pick, branches past the obstacle included
+pub const GROUP_G_WEIGHT: f64 = 0.2; // branches score their cost to go plus this times their own cost
+pub const NONSTOP: bool = true;
+pub const NONSTOP_LEAD: f64 = 0.5; // s
+pub const DEAD_REPLAN_ITERATIONS: usize = 20_000; // a replan with fewer than DEAD_REPLAN_NODES active nodes after
+pub const DEAD_REPLAN_NODES: usize = 5; // this many iterations is dead
+// Reconnecting: Hermite shortcuts from the replan start onto states of any still-valid route
+pub const RECONNECT_RADIUS: f64 = 250.0; // px from the start a target may be
+pub const RECONNECT_TARGET_SPACING: f64 = 15.0; // px along a route between targets
+pub const RECONNECT_MAX_TARGETS: usize = 20; // most promising targets tried
+pub const RECONNECT_TANGENTS: [f64; 3] = [0.5, 0.8, 1.1];
+pub const RECONNECT_LOOKAHEADS: [f64; 2] = [15.0, 30.0];
+pub const RECONNECT_MAX_TURN: f64 = 120.0 * PI / 180.0; // skip targets whose heading differs more than this
+pub const RECONNECT_JOIN_WINDOW: (usize, usize) = (10, 30); // route states before and after a target to join at
