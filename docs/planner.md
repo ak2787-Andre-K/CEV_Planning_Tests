@@ -499,6 +499,76 @@ A few things are organized differently because of Rust:
 
 ---
 
+## Part 5: Testing over Zenoh with a fake sim
+
+The team's sim (`cev_sim`) will talk over Zenoh once Cam's shared message types are done. Until then, `sst_rs`
+has a stand-in so we can test the planner the way it'll be used: map, car position and goal coming in over
+Zenoh, path going out, for the real car's size.
+
+![The planned path on the fake lot](fake_world.png)
+
+### The `merceves` car
+
+`sst_rs` can be built for the sim's car instead of the demo's pixel car: `--features merceves`. The numbers
+from Jaiden:
+
+| | Real | In the planner |
+|---|---|---|
+| Length × width | 43 × 22.5 in (1.092 × 0.572 m) | 10.9 × 5.7 units |
+| Wheelbase (front to back between the axles) | 26 in (0.660 m) | 6.6 units |
+| Track width (side to side between the wheels) | 20.5 in | (not used by the planner's car model) |
+| Max steering | 11° | tightest turn ≈ 3.4 m radius |
+
+The planner works in **decimeters** for this car (1 unit = 0.1 m). At that unit the real car is about the size
+of the pixel car (10 × 5, wheelbase 6), so everything tuned for the car's size (safety margin, collision checks)
+still fits. Messages on Zenoh are in meters and converted at the edge.
+
+Still **placeholders** until Jaiden sends them: top speed (2 m/s), acceleration (1 m/s²), reverse speed,
+steering speed (30°/s), and where the axles sit along the body (assumed: equal overhang front and back). The sim
+has some of these too (`world.vehicle.max_speed_mps`).
+
+Three settings had to change for a slow car that can only steer 11°, or the planner never found a path:
+
+- **Search radius** (`DELTA_B_N_START` 60 → 8). New branches closer than a quarter of it to a cheaper one are
+  thrown away. The real car covers under 1 m per branch, so with 60 every branch landed next to the start and
+  was dropped.
+- **Edge length** (`TIME_PROP` 0.5 → 1 s) and **steering spread** (`STEER_TARGET_SIGMA` 0.5 → 1). A 90° turn is
+  about 5 m at full lock; short branches with steering mostly near straight almost never chained into one.
+
+With those, it finds a path across the fake lot in about 50,000 iterations and plans in about 4 s.
+
+### The two nodes
+
+```
+cargo run --release --features merceves --bin sim_planner   # our planner: map + pose + goal in, path out
+cargo run --release --bin fake_world                         # stands in for the sim, draws fake_world.png
+```
+
+- **`fake_world`** publishes a made-up 30 × 15 m lot (walls, two big blocks that force an S-shaped route,
+  a few boxes) as an occupancy grid, the car's pose and a goal, once a second. Every path that comes back
+  is drawn to `fake_world.png`: walls dark, path blue, the car's outline every second along it orange.
+- **`sim_planner`** keeps the latest map, pose and goal, and whenever the goal or the map changes, plans from
+  the car's latest pose and publishes the path.
+- **`listen`** prints every message on the network (`cargo run --release --bin listen`), handy for seeing what
+  any node publishes.
+
+### The messages (placeholders until Cam's types)
+
+| Key | Who publishes | What's in it |
+|---|---|---|
+| `cev/sim/map` | the sim (`fake_world`) | occupancy grid: `resolution` (m per cell), `width`, `height`, `origin` [x, y], `data` row by row, -1 unknown, 0 free, 100 occupied |
+| `cev/sim/pose` | the sim | `x`, `y`, `heading`, `speed` |
+| `cev/sim/goal` | the sim | `x`, `y`, `radius` |
+| `cev/planner/path` | `sim_planner` | `found`, `cost`, `time`, `plan_ms`, `path`: points with `x`, `y`, `heading`, `speed`, `steer`, `time` |
+
+All in meters and radians, JSON. The map is laid out like ROS's `OccupancyGrid`, which is common, so Cam's
+version may be close. x and y are on the ground with heading 0 along +x: the sim's x and z.
+
+When Cam's types land: swap these message structs (`sim.rs`) and key names for his, point `sim_planner` at the
+real sim instead of `fake_world`, and put the real speeds in.
+
+---
+
 ## RRT vs. SST
 
 | | RRT (`rrt.py`) | SST (`sst/`) |

@@ -1,12 +1,82 @@
-//! The settings the global planner uses, with the same values as `sst/config.py`.
+//! The settings the planner and Driver use, with the same values as `sst/config.py`.
+//!
+//! The world and car settings come in two versions. By default they're the Python demo's: a 2000 x 1000 px street map
+//! and a made-up 10 x 5 px car. Built with `--features merceves` they're the sim's `merceves` car on a 30 x 15 m map,
+//! in decimeters: at that unit the real car is about the size of the pixel one, so every setting tuned for the car's
+//! size (safety margin, collision checks, search radii) still fits.
 use std::f64::consts::PI;
 
-pub const SCREEN_WIDTH: usize = 2000;
-pub const SCREEN_HEIGHT: usize = 1000;
-pub const START: (f64, f64) = (250.0, 100.0);
-pub const START_HEADING: f64 = 0.0; // rad; 0 = facing right (+x), positive = clockwise on screen
-pub const TARGET: (f64, f64) = (1950.0, 700.0);
-pub const TARGET_RAD: f64 = 70.0;
+pub use world_and_car::*;
+
+#[cfg(not(feature = "merceves"))]
+mod world_and_car {
+    use std::f64::consts::PI;
+
+    pub const SCREEN_WIDTH: usize = 2000;
+    pub const SCREEN_HEIGHT: usize = 1000;
+    pub const START: (f64, f64) = (250.0, 100.0);
+    pub const START_HEADING: f64 = 0.0; // rad; 0 = facing right (+x), positive = clockwise on screen
+    pub const TARGET: (f64, f64) = (1950.0, 700.0);
+    pub const TARGET_RAD: f64 = 70.0;
+    pub const METERS_PER_UNIT: f64 = 1.0; // (the street map isn't in real units)
+
+    // Car geometry (px)
+    pub const WHEELBASE: f64 = 6.0; // distance between front and rear axles
+    // Collision footprint: 3 circles in a row along the 10 x 5 px body (+1 px for grid rounding)
+    pub const FOOTPRINT_RADIUS: f64 = 4.004626062886658; // hypot(10 / 3 / 2, 5 / 2) + 1
+    pub const FOOTPRINT_OFFSETS: [f64; 3] = [-1.0 / 3.0, 3.0, 19.0 / 3.0]; // circle centers, px ahead of the rear axle
+    pub const FOOTPRINT_REACH: f64 = 19.0 / 3.0; // farthest circle center from the rear axle
+
+    // Car dynamics
+    pub const MAX_ACCELERATION: f64 = 120.0; // px/s^2
+    pub const MAX_SPEED: f64 = 300.0; // px/s
+    pub const MAX_REVERSE_SPEED: f64 = 100.0;
+    pub const MAX_STEER_RATE: f64 = 20.0 * PI / 180.0; // rad/s
+    pub const MAX_STEER: f64 = 35.0 * PI / 180.0; // rad, front wheel steering angle
+    pub const MAX_LATERAL_ACCELERATION: f64 = 200.0;
+    pub const DELTA_B_N_START: f64 = 60.0; // selection radius; the witness radius starts at a quarter of it
+    pub const TIME_PROP: f64 = 0.5; // s, longest edge
+    pub const STEER_TARGET_SIGMA: f64 = 0.5; // random target steering spread, times the most allowed at the edge's speed
+}
+
+/// The sim's `merceves` car (sizes from Jaiden, 2026-11-06), in decimeters (1 unit = 0.1 m), on a 30 x 15 m map.
+#[cfg(feature = "merceves")]
+mod world_and_car {
+    use std::f64::consts::PI;
+
+    pub const SCREEN_WIDTH: usize = 300; // 30 m
+    pub const SCREEN_HEIGHT: usize = 150; // 15 m
+    pub const START: (f64, f64) = (20.0, 20.0);
+    pub const START_HEADING: f64 = 0.0; // rad; 0 = +x, positive = toward +y
+    pub const TARGET: (f64, f64) = (270.0, 120.0);
+    pub const TARGET_RAD: f64 = 10.0; // 1 m
+    pub const METERS_PER_UNIT: f64 = 0.1;
+
+    // Car geometry: 43 x 22.5 in body, 26 in wheelbase (20.5 in track width, unused by the bicycle model)
+    pub const WHEELBASE: f64 = 6.604; // 0.660 m
+    // Collision footprint: 3 circles along the 1.092 x 0.572 m body. ASSUMED: the body overhangs the axles equally
+    // front and back (8.5 in each); ask Jaiden for the real overhangs
+    pub const FOOTPRINT_RADIUS: f64 = 4.388055444417113; // hypot(10.922 / 6, 5.715 / 2) + 1
+    pub const FOOTPRINT_OFFSETS: [f64; 3] = [-0.3386666666666671, 3.302, 6.942666666666666];
+    pub const FOOTPRINT_REACH: f64 = 6.942666666666666;
+
+    // Car dynamics. Only MAX_STEER is the real car's (11 degrees); the rest are PLACEHOLDERS until Jaiden sends them
+    // (cev_sim's world.vehicle also has max_speed_mps)
+    pub const MAX_ACCELERATION: f64 = 10.0; // 1 m/s^2 (placeholder)
+    pub const MAX_SPEED: f64 = 20.0; // 2 m/s (placeholder)
+    pub const MAX_REVERSE_SPEED: f64 = 5.0; // 0.5 m/s (placeholder)
+    pub const MAX_STEER_RATE: f64 = 30.0 * PI / 180.0; // rad/s (placeholder)
+    pub const MAX_STEER: f64 = 11.0 * PI / 180.0; // rad, front wheel steering angle: tightest turn ~3.4 m radius
+    pub const MAX_LATERAL_ACCELERATION: f64 = 30.0; // 3 m/s^2 (placeholder; the 11 degree limit binds first)
+    // Selection radius, scaled to how far this car drives in one edge (at most ~1 m at 2 m/s, against 30-150 px for
+    // the pixel car): with the pixel car's 60, every new node landed within the start's witness radius and was dropped
+    pub const DELTA_B_N_START: f64 = 8.0;
+    // A slow car that can only steer 11 degrees needs longer edges and more full-lock steering to turn at all: a 90
+    // degree turn is ~5 m of full lock, which edges of at most 1 m with steering mostly near straight rarely chained
+    pub const TIME_PROP: f64 = 1.0; // s, longest edge
+    pub const STEER_TARGET_SIGMA: f64 = 1.0; // random target steering spread, times the most allowed at the edge's speed
+}
+
 pub const MAX_PLAN_ITERATIONS: usize = 100_000;
 
 // SST* annealing: once a path exists, every ANNEAL_WINDOW iterations the best cost is compared with the window's
@@ -15,24 +85,16 @@ pub const ANNEAL_WINDOW: usize = 10_000;
 pub const ANNEAL_MIN_GAIN: f64 = 0.10;
 pub const ANNEAL_FACTOR: f64 = 0.8;
 
-// Car geometry (px)
-pub const WHEELBASE: f64 = 6.0; // distance between front and rear axles
-// Collision footprint: 3 circles in a row along the 10 x 5 px body (+1 px for grid rounding)
-pub const FOOTPRINT_RADIUS: f64 = 4.004626062886658; // hypot(10 / 3 / 2, 5 / 2) + 1
-pub const FOOTPRINT_OFFSETS: [f64; 3] = [-1.0 / 3.0, 3.0, 19.0 / 3.0]; // circle centers, px ahead of the rear axle
-pub const FOOTPRINT_REACH: f64 = 19.0 / 3.0; // farthest circle center from the rear axle
 pub const SAFETY_MARGIN: f64 = 2.0; // px of clearance every checked state must have
 pub const CHECK_SPACING: f64 = 2.0 * SAFETY_MARGIN; // most any footprint circle moves between check points
 pub const SDF_CAP: f64 = 20.0;
 
-// Selection and witness radii, in state distance units (roughly px)
-pub const DELTA_B_N_START: f64 = 60.0;
+// Selection and witness radii, in state distance units (roughly px); DELTA_B_N_START is with the car settings
 pub const DELTA_B_N_MIN: f64 = DELTA_B_N_START / 20.0; // never annealed below this
 // State distance: euclidean px + W_A * heading diff (rad) + W_V * speed diff (px/s) + W_ST * steering diff (rad)
 pub const W_A: f64 = 14.32394487827058; // 1/4 per degree
 pub const W_V: f64 = 1.0 / 5.0;
 pub const W_ST: f64 = 1.0 / 10.0;
-pub const TIME_PROP: f64 = 0.5; // s, longest edge
 
 // Edge cost per second: 1 + COST_ACCEL |accel| + COST_DECEL braking + COST_STEER_RATE |rate| + COST_STEER_ANGLE |steer|
 pub const COST_ACCEL: f64 = 0.0;
@@ -41,14 +103,6 @@ pub const COST_STEER_ANGLE: f64 = 10.8;
 pub const COST_DECEL: f64 = 0.01;
 pub const PLAN_DT: f64 = 1.0 / 80.0; // s, planner step; edges last a whole number of these
 
-// Car dynamics
-pub const MAX_ACCELERATION: f64 = 120.0; // px/s^2
-pub const MAX_SPEED: f64 = 300.0; // px/s
-pub const MAX_REVERSE_SPEED: f64 = 100.0;
-pub const MAX_STEER_RATE: f64 = 20.0 * PI / 180.0; // rad/s
-pub const MAX_STEER: f64 = 35.0 * PI / 180.0; // rad, front wheel steering angle
-pub const MAX_LATERAL_ACCELERATION: f64 = 200.0;
-pub const STEER_TARGET_SIGMA: f64 = 0.5; // random target steering spread, times the most allowed at the edge's top speed
 pub const EARLY_STEER_ITERATIONS: usize = 100; // the first iterations sample steering with a narrower spread...
 pub const EARLY_STEER_VARIANCE_SCALE: f64 = 0.25; // ...this fraction of the normal variance
 pub const EARLY_ACCEL_MEAN: f64 = MAX_ACCELERATION / 2.0; // ...and acceleration from a normal around this

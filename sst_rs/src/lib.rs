@@ -10,6 +10,7 @@ pub mod maneuvers;
 pub mod map;
 pub mod planner;
 pub mod rng;
+pub mod sim;
 pub mod route;
 pub mod smoothing;
 pub mod tree;
@@ -66,13 +67,16 @@ pub struct PlanResponse {
 /// Plan (and, unless the request says not to, smooth) a path for `request`. `streets` is the plain street map, reused
 /// when the request adds no obstacles.
 pub fn plan(streets: &Map, request: &PlanRequest, verbose: bool) -> PlanResponse {
-    let with_obstacles;
-    let map = if request.obstacles.is_empty() {
-        streets
+    if request.obstacles.is_empty() {
+        plan_on(streets, request, verbose)
     } else {
-        with_obstacles = Map::streets(&request.obstacles);
-        &with_obstacles
-    };
+        plan_on(&Map::streets(&request.obstacles), request, verbose)
+    }
+}
+
+/// Plan (and, unless the request says not to, smooth) a path for `request` on `map`, ignoring the request's extra
+/// obstacles. Positions are in planner units.
+pub fn plan_on(map: &Map, request: &PlanRequest, verbose: bool) -> PlanResponse {
     let (x, y) = request.start.unwrap_or(START);
     let start = State::new(x, y, request.start_heading.unwrap_or(START_HEADING), 0.0);
     let (gx, gy) = request.goal.unwrap_or(TARGET);

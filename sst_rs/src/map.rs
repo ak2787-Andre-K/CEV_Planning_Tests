@@ -247,6 +247,12 @@ impl Map {
         rasterize(&mut occupancy, obstacles, OCCUPIED);
         rasterize(&mut occupancy, roads, background);
         rasterize(&mut occupancy, extra, OCCUPIED);
+        Map::from_occupancy(occupancy)
+    }
+
+    /// A map from an occupancy grid (FREE / OCCUPIED / UNKNOWN per cell, indexed by `cell`), with its distance fields.
+    pub fn from_occupancy(occupancy: Vec<u8>) -> Map {
+        assert_eq!(occupancy.len(), SCREEN_WIDTH * SCREEN_HEIGHT);
         let n = occupancy.len();
         let mut map = Map {
             occupancy, obstacle_sdf: vec![0.0; n], unknown_sdf: vec![0.0; n], version: 0, new_obstacles: false,
