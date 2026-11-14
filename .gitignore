@@ -15,3 +15,7 @@ maneuver_library.npz
 
 # Rust build output
 target/
+
+# Picture fake_world draws where it's run (docs/fake_world.png is kept)
+/fake_world.png
+/sst_rs/fake_world.png

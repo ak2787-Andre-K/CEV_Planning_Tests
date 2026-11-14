@@ -499,6 +499,87 @@ A few things are organized differently because of Rust:
 
 ---
 
+## Part 5: Testing over Zenoh with a fake sim
+
+The team's sim (`cev_sim`) isn't on Zenoh yet. Until it is, `sst_rs` has a stand-in so we can test the planner the
+way it'll be used: map, car state and goal coming in over Zenoh as the team's protobuf messages, path going out,
+for the real car's size.
+
+![The planned path on the fake lot](fake_world.png)
+
+### The `merceves` car
+
+`sst_rs` can be built for the sim's car instead of the demo's pixel car: `--features merceves`. The numbers
+from Jaiden:
+
+| | Real | In the planner |
+|---|---|---|
+| Length × width | 43 × 22.5 in (1.092 × 0.572 m) | 10.9 × 5.7 units |
+| Wheelbase (front to back between the axles) | 26 in (0.660 m) | 6.6 units |
+| Track width (side to side between the wheels) | 20.5 in | (not used by the planner's car model) |
+| Max steering | 11° | tightest turn ≈ 3.4 m radius |
+
+The planner works in **decimeters** for this car (1 unit = 0.1 m). At that unit the real car is about the size
+of the pixel car (10 × 5, wheelbase 6), so everything tuned for the car's size (safety margin, collision checks)
+still fits. Messages on Zenoh are in meters (the team's convention) and converted at the edge.
+
+Still **placeholders** until Jaiden sends them: top speed (2 m/s), acceleration (1 m/s²), reverse speed,
+steering speed (30°/s), and where the axles sit along the body (assumed: equal overhang front and back). The sim
+has some of these too (`world.vehicle.max_speed_mps`).
+
+Three settings had to change for a slow car that can only steer 11°, or the planner never found a path:
+
+- **Search radius** (`DELTA_B_N_START` 60 → 8). New branches closer than a quarter of it to a cheaper one are
+  thrown away. The real car covers under 1 m per branch, so with 60 every branch landed next to the start and
+  was dropped.
+- **Edge length** (`TIME_PROP` 0.5 → 1 s) and **steering spread** (`STEER_TARGET_SIGMA` 0.5 → 1). A 90° turn is
+  about 5 m at full lock; short branches with steering mostly near straight almost never chained into one.
+
+With those, it finds a path across the fake lot in about 50,000 iterations and plans in about 4 s.
+
+### The two nodes
+
+```
+cargo run --release --features merceves --bin sim_planner   # our planner: map + pose + goal in, path out
+cargo run --release --bin fake_world                         # stands in for the sim, draws fake_world.png
+```
+
+- **`fake_world`** publishes a made-up 30 × 15 m lot (walls, two big blocks that force an S-shaped route,
+  a few boxes) as an occupancy grid, the car's pose and a goal, once a second. Every path that comes back
+  is drawn to `fake_world.png`: walls dark, path blue, the car's outline every second along it orange.
+- **`sim_planner`** keeps the latest map, pose and goal, and whenever the goal or the map changes, plans from
+  the car's latest pose and publishes the path.
+- **`listen`** prints every message on the network (`cargo run --release --bin listen`), with the four topics
+  below decoded from protobuf, handy for seeing what any node publishes.
+
+### The messages (protobuf, from cev-interfaces)
+
+The messages are the team's protobuf types from
+[cornellev/cev-interfaces](https://github.com/cornellev/cev-interfaces). `sst_rs` pulls in its generated Rust
+crate (`cev-interfaces` in `Cargo.toml`). The planning messages come from our PR there,
+[cev-interfaces#5](https://github.com/cornellev/cev-interfaces/pull/5); until it merges, `Cargo.toml` points at its
+`planning-messages` branch, so switch that to `main` once it's in.
+
+| Key | Who publishes | Type | What's in it |
+|---|---|---|---|
+| `cev/sensors/lidar/occupancy_grid/global` | the lidar (here `fake_world`) | `OccupancyGrid` | size, resolution, origin, row-by-row cells with nav2 values: 0 free, 1-252 cost, 253 inscribed, 254 lethal, 255 unknown |
+| `cev/vehicle/state` | the sim / localization | `VehicleState` | rear axle `Pose2`, speed, steering |
+| `cev/planning/goal` | whatever sets the destination | `Goal` | target `Pose2`, arrival tolerance |
+| `cev/planning/global_path` | `sim_planner` | `Path` | points (pose, speed, steering, time), whether it reaches the goal, cost |
+
+Conventions are cev-interfaces': SI units, radians, world x east / y north, heading counterclockwise from +x. The
+planner reads 253 and up as obstacles, 255 as unknown, and everything else as free, since it keeps its own clearance
+from obstacles.
+
+`OccupancyGrid` is still in an open PR ([cev-interfaces#3](https://github.com/cornellev/cev-interfaces/pull/3)), so
+it isn't in the generated crate yet. `sim.rs` has a copy with the same field numbers, which encodes and decodes the
+same bytes. Swap it for `cev_interfaces::OccupancyGrid` once #3 merges.
+
+To connect to the real sim: point `sim_planner` at it instead of `fake_world` and put in the real speeds. The
+topics and types are already the team's.
+
+---
+
 ## RRT vs. SST
 
 | | RRT (`rrt.py`) | SST (`sst/`) |

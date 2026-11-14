@@ -15,7 +15,9 @@ Toy homework where we are working on building up a global planner. Currently wor
   `cargo run --release --bin request` in another.
   Add `--listen tcp/0.0.0.0:7447` / `--connect tcp/<ip>:7447` if multicast discovery doesn't work on your network.
   `cargo run --release --bin drive` drives like the Python demo, without a window (the Driver isn't on zenoh yet).
+  To test over zenoh for the sim's car before the sim is on zenoh: `cargo run --release --features merceves --bin sim_planner`
+  in one terminal and `cargo run --release --bin fake_world` in another (it draws the path to `fake_world.png`).
 
 Requirements: `pygame` and `numpy` for both, plus `numba` for `sst`, and Rust (`cargo`) for `sst_rs`.
 
-See [docs/planner.md](docs/planner.md) for how both planners work, and Parts 3 and 4 there for the Rust version.
+See [docs/planner.md](docs/planner.md) for how both planners work, and Parts 3-5 there for the Rust version and the fake-sim test.
