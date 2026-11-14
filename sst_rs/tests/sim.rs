@@ -1,28 +1,42 @@
 use cev_sst::config::{FREE, OCCUPIED, UNKNOWN};
 use cev_sst::map::cell;
-use cev_sst::sim::{OccupancyGrid, PlannedPath, to_meters, to_units};
+use cev_sst::sim::{
+    NAV2_FREE, NAV2_INSCRIBED, NAV2_LETHAL, NAV2_UNKNOWN, OccupancyGrid, Path, PathPoint, pose2, to_meters, to_units,
+    xy_heading,
+};
+use cev_sst::tree::State;
+use prost::Message;
 
 #[test]
-fn grid_messages_become_planner_maps() {
-    // 4 x 2 cells of 10 m: row 0 = free, occupied, unknown, free; row 1 all free (default build: 1 unit = 1 m)
+fn occupancy_grids_become_planner_maps() {
+    // 5 x 2 cells of 10 m (default build: 1 unit = 1 m). Row 0: free, lethal, unknown, inscribed, a cost (free)
     let grid = OccupancyGrid {
-        resolution: 10.0, width: 4, height: 2, origin: (0.0, 0.0), data: vec![0, 100, -1, 0, 0, 0, 0, 0],
+        header: None, size_x: 5, size_y: 2, resolution_m: 10.0, origin_x: 0.0, origin_y: 0.0,
+        data: vec![NAV2_FREE, NAV2_LETHAL, NAV2_UNKNOWN, NAV2_INSCRIBED, 100, 0, 0, 0, 0, 0],
     };
-    assert_eq!(grid.at(15.0, 5.0), Some(100));
-    assert_eq!(grid.at(45.0, 5.0), None);
+    // Through the wire and back: same bytes layout as cev-interfaces' lidar.proto
+    let grid = OccupancyGrid::decode(grid.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(grid.at(15.0, 5.0), Some(NAV2_LETHAL));
+    assert_eq!(grid.at(55.0, 5.0), None);
     let map = grid.to_map();
     assert_eq!(map.occupancy[cell(5, 5)], FREE);
     assert_eq!(map.occupancy[cell(15, 5)], OCCUPIED);
     assert_eq!(map.occupancy[cell(25, 5)], UNKNOWN);
+    assert_eq!(map.occupancy[cell(35, 5)], OCCUPIED, "inscribed counts as an obstacle");
+    assert_eq!(map.occupancy[cell(45, 5)], FREE, "costs below inscribed are free; the planner keeps its own margin");
     assert_eq!(map.occupancy[cell(100, 100)], UNKNOWN, "off the grid is unknown");
-    assert_eq!(map.obstacle_sdf[cell(15, 5)], 0.0);
     assert_eq!(to_meters(to_units(3.5)), 3.5);
 }
 
 #[test]
-fn path_messages_round_trip() {
-    let json = r#"{"found":true,"cost":1.5,"time":2.0,"plan_ms":10.0,
-                   "path":[{"x":1.0,"y":2.0,"heading":0.5,"speed":1.0,"steer":0.1,"time":0.0}]}"#;
-    let path: PlannedPath = serde_json::from_str(json).unwrap();
-    assert_eq!((path.path[0].x, path.path[0].heading), (1.0, 0.5));
+fn path_points_wrap_heading_and_round_trip() {
+    let state = State::new(30.0, 40.0, 3.0 * std::f64::consts::PI / 2.0, 2.0);
+    let point = PathPoint::from(&state);
+    let (x, y, heading) = xy_heading(point.pose.as_ref());
+    assert_eq!((x, y), (to_meters(30.0), to_meters(40.0)));
+    assert!((heading + std::f64::consts::FRAC_PI_2).abs() < 1e-12, "3/2 pi wraps to -pi/2, as Pose2 wants");
+    let path = Path { header: None, points: vec![point], reaches_goal: true, cost: 1.5 };
+    let back = Path::decode(path.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(back, path);
+    assert_eq!(xy_heading(Some(&pose2(1.0, 2.0, 0.5))), (1.0, 2.0, 0.5));
 }

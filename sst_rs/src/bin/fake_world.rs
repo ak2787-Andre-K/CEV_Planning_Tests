@@ -1,23 +1,25 @@
-//! Stands in for the sim until it's on Zenoh: publishes a made-up 30 x 15 m lot as an occupancy grid on MAP_KEY, the
-//! car's pose on POSE_KEY and a goal on GOAL_KEY, once a second, and draws every path that comes back on SIM_PATH_KEY
-//! (with the map, the start, the goal and the car's outline along it) to `fake_world.png`.
+//! Stands in for the sim until it's on Zenoh: publishes a made-up 30 x 15 m lot as the lidar's occupancy grid on
+//! MAP_KEY, the car's state on STATE_KEY and a goal on GOAL_KEY, once a second, all protobuf (cev-interfaces), and
+//! draws every path that comes back on GLOBAL_PATH_KEY (with the map, the start, the goal and the car's outline along
+//! it) to `fake_world.png`.
 //! `fake_world [--once] [--out <file.png>]`: --once exits after the first path.
 use std::io::Write;
 use std::time::Duration;
 
 use cev_sst::sim::{
-    CAR_LENGTH_M, CAR_WIDTH_M, GOAL_KEY, Goal, MAP_KEY, OccupancyGrid, POSE_KEY, PlannedPath, Pose, SIM_PATH_KEY,
-    WHEELBASE_M,
+    CAR_LENGTH_M, CAR_WIDTH_M, GLOBAL_PATH_KEY, GOAL_KEY, Goal, MAP_KEY, NAV2_FREE, NAV2_INSCRIBED, NAV2_LETHAL,
+    NAV2_UNKNOWN, OccupancyGrid, Path, STATE_KEY, VehicleState, WHEELBASE_M, header_now, pose2, xy_heading,
 };
 use cev_sst::zenoh_config;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
+use prost::Message;
 use zenoh::Wait;
 
 const RESOLUTION: f64 = 0.05; // m per cell
 const SIZE: (f64, f64) = (30.0, 15.0); // m
-const START: Pose = Pose { x: 2.0, y: 2.0, heading: 0.0, speed: 0.0 };
-const GOAL: Goal = Goal { x: 28.0, y: 12.0, radius: 1.0 };
+const START: (f64, f64, f64) = (2.0, 2.0, 0.0); // m, m, rad: where the car's rear axle starts, facing +x
+const GOAL: (f64, f64, f64) = (28.0, 12.0, 1.0); // m, m, m: goal position and how close counts as arrived
 const PIXELS_PER_M: f64 = 40.0; // picture scale
 
 /// The lot: walls around it, two blocks that force an S-shaped route (gaps sized for the car's ~3.4 m turning
@@ -30,16 +32,19 @@ fn lot() -> OccupancyGrid {
         (15.0, 13.0, 16.0, 14.0), (12.5, 2.6, 13.3, 3.4), (4.0, 12.0, 5.0, 13.0), // small boxes
     ];
     let (width, height) = ((SIZE.0 / RESOLUTION) as usize, (SIZE.1 / RESOLUTION) as usize);
-    let mut data = vec![0i8; width * height];
+    let mut data = vec![NAV2_FREE; width * height];
     for row in 0..height {
         for col in 0..width {
             let (x, y) = ((col as f64 + 0.5) * RESOLUTION, (row as f64 + 0.5) * RESOLUTION);
             if rects.iter().any(|&(x0, y0, x1, y1)| x0 <= x && x < x1 && y0 <= y && y < y1) {
-                data[row * width + col] = 100;
+                data[row * width + col] = NAV2_LETHAL;
             }
         }
     }
-    OccupancyGrid { resolution: RESOLUTION, width, height, origin: (0.0, 0.0), data }
+    OccupancyGrid {
+        header: Some(header_now("world")), size_x: width as u32, size_y: height as u32, resolution_m: RESOLUTION as f32,
+        origin_x: 0.0, origin_y: 0.0, data,
+    }
 }
 
 /// An RGB picture, y up like the world.
@@ -132,36 +137,37 @@ impl Picture {
 
 /// The lot with the path drawn on it: walls and boxes dark, the path blue, the car's outline every second along it
 /// orange, the start green and the goal red.
-fn draw(grid: &OccupancyGrid, path: &PlannedPath, file: &str) -> std::io::Result<()> {
+fn draw(grid: &OccupancyGrid, path: &Path, file: &str) -> std::io::Result<()> {
     let (w, h) = ((SIZE.0 * PIXELS_PER_M) as usize, (SIZE.1 * PIXELS_PER_M) as usize);
     let mut pic = Picture { w, h, rgb: vec![0; w * h * 3] };
     for py in 0..h {
         for px in 0..w {
             let (x, y) = ((px as f64 + 0.5) / PIXELS_PER_M, (h - 1 - py) as f64 / PIXELS_PER_M);
             let color = match grid.at(x, y) {
-                Some(v) if v >= 50 => [60, 60, 60],
-                Some(v) if v >= 0 => [245, 245, 245],
-                _ => [180, 180, 180],
+                Some(NAV2_UNKNOWN) | None => [180, 180, 180],
+                Some(v) if v >= NAV2_INSCRIBED => [60, 60, 60],
+                Some(_) => [245, 245, 245],
             };
             pic.rgb[(py * w + px) * 3..][..3].copy_from_slice(&color);
         }
     }
     for k in 0..48 {
         let (a, b) = (k as f64 / 48.0 * std::f64::consts::TAU, (k + 1) as f64 / 48.0 * std::f64::consts::TAU);
-        let r = GOAL.radius;
-        pic.line((GOAL.x + r * a.cos(), GOAL.y + r * a.sin()), (GOAL.x + r * b.cos(), GOAL.y + r * b.sin()), 3.0, [210, 40, 40]);
+        let (gx, gy, r) = GOAL;
+        pic.line((gx + r * a.cos(), gy + r * a.sin()), (gx + r * b.cos(), gy + r * b.sin()), 3.0, [210, 40, 40]);
     }
-    for pair in path.path.windows(2) {
-        pic.line((pair[0].x, pair[0].y), (pair[1].x, pair[1].y), 3.0, [30, 100, 230]);
+    let points: Vec<(f64, f64, f64)> = path.points.iter().map(|p| xy_heading(p.pose.as_ref())).collect();
+    for pair in points.windows(2) {
+        pic.line((pair[0].0, pair[0].1), (pair[1].0, pair[1].1), 3.0, [30, 100, 230]);
     }
     let mut next = 0.0;
-    for p in &path.path {
-        if p.time >= next {
-            pic.car((p.x, p.y, p.heading), [240, 140, 20]);
+    for (p, pose) in path.points.iter().zip(&points) {
+        if p.time_s >= next {
+            pic.car(*pose, [240, 140, 20]);
             next += 1.0;
         }
     }
-    pic.car((START.x, START.y, START.heading), [40, 170, 60]);
+    pic.car(START, [40, 170, 60]);
     pic.save_png(file)
 }
 
@@ -171,20 +177,33 @@ fn main() -> zenoh::Result<()> {
     let out = args.iter().position(|a| a == "--out").and_then(|i| args.get(i + 1)).cloned()
         .unwrap_or_else(|| "fake_world.png".into());
     let session = zenoh::open(zenoh_config()?).wait()?;
-    let paths = session.declare_subscriber(SIM_PATH_KEY).wait()?;
+    let paths = session.declare_subscriber(GLOBAL_PATH_KEY).wait()?;
     let grid = lot();
-    let (map_json, pose_json, goal_json) =
-        (serde_json::to_string(&grid)?, serde_json::to_string(&START)?, serde_json::to_string(&GOAL)?);
     println!("fake world: a {} x {} m lot; car at ({}, {}) m, goal ({}, {}) m; publishing every second",
-             SIZE.0, SIZE.1, START.x, START.y, GOAL.x, GOAL.y);
+             SIZE.0, SIZE.1, START.0, START.1, GOAL.0, GOAL.1);
     loop {
-        session.put(MAP_KEY, map_json.as_str()).wait()?;
-        session.put(POSE_KEY, pose_json.as_str()).wait()?;
-        session.put(GOAL_KEY, goal_json.as_str()).wait()?;
+        let state = VehicleState {
+            header: Some(header_now("world")), pose: Some(pose2(START.0, START.1, START.2)), speed_mps: 0.0,
+            steering_rad: 0.0,
+        };
+        let goal = Goal {
+            header: Some(header_now("world")), pose: Some(pose2(GOAL.0, GOAL.1, 0.0)), tolerance_m: GOAL.2,
+            use_heading: false, heading_tolerance_rad: 0.0,
+        };
+        session.put(MAP_KEY, grid.encode_to_vec()).wait()?;
+        session.put(STATE_KEY, state.encode_to_vec()).wait()?;
+        session.put(GOAL_KEY, goal.encode_to_vec()).wait()?;
         if let Some(sample) = paths.recv_timeout(Duration::from_secs(1))? {
-            let path: PlannedPath = serde_json::from_slice(&sample.payload().to_bytes())?;
-            println!("fake world: got a path: found={}, {:.1} s of driving, {} points; drawn to {out}",
-                     path.found, path.time, path.path.len());
+            let path = match Path::decode(sample.payload().to_bytes().as_ref()) {
+                Ok(path) => path,
+                Err(err) => {
+                    eprintln!("fake world: ignoring a bad path: {err}");
+                    continue;
+                }
+            };
+            let time = path.points.last().map_or(0.0, |p| p.time_s);
+            println!("fake world: got a path: reaches_goal={}, {time:.1} s of driving, {} points; drawn to {out}",
+                     path.reaches_goal, path.points.len());
             draw(&grid, &path, &out)?;
             if once {
                 return Ok(());

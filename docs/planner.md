@@ -501,9 +501,9 @@ A few things are organized differently because of Rust:
 
 ## Part 5: Testing over Zenoh with a fake sim
 
-The team's sim (`cev_sim`) will talk over Zenoh once Cam's shared message types are done. Until then, `sst_rs`
-has a stand-in so we can test the planner the way it'll be used: map, car position and goal coming in over
-Zenoh, path going out, for the real car's size.
+The team's sim (`cev_sim`) isn't on Zenoh yet. Until it is, `sst_rs` has a stand-in so we can test the planner the
+way it'll be used: map, car state and goal coming in over Zenoh as the team's protobuf messages, path going out,
+for the real car's size.
 
 ![The planned path on the fake lot](fake_world.png)
 
@@ -521,7 +521,7 @@ from Jaiden:
 
 The planner works in **decimeters** for this car (1 unit = 0.1 m). At that unit the real car is about the size
 of the pixel car (10 × 5, wheelbase 6), so everything tuned for the car's size (safety margin, collision checks)
-still fits. Messages on Zenoh are in meters and converted at the edge.
+still fits. Messages on Zenoh are in meters (the team's convention) and converted at the edge.
 
 Still **placeholders** until Jaiden sends them: top speed (2 m/s), acceleration (1 m/s²), reverse speed,
 steering speed (30°/s), and where the axles sit along the body (assumed: equal overhang front and back). The sim
@@ -549,23 +549,34 @@ cargo run --release --bin fake_world                         # stands in for the
   is drawn to `fake_world.png`: walls dark, path blue, the car's outline every second along it orange.
 - **`sim_planner`** keeps the latest map, pose and goal, and whenever the goal or the map changes, plans from
   the car's latest pose and publishes the path.
-- **`listen`** prints every message on the network (`cargo run --release --bin listen`), handy for seeing what
-  any node publishes.
+- **`listen`** prints every message on the network (`cargo run --release --bin listen`), with the four topics
+  below decoded from protobuf, handy for seeing what any node publishes.
 
-### The messages (placeholders until Cam's types)
+### The messages (protobuf, from cev-interfaces)
 
-| Key | Who publishes | What's in it |
-|---|---|---|
-| `cev/sim/map` | the sim (`fake_world`) | occupancy grid: `resolution` (m per cell), `width`, `height`, `origin` [x, y], `data` row by row, -1 unknown, 0 free, 100 occupied |
-| `cev/sim/pose` | the sim | `x`, `y`, `heading`, `speed` |
-| `cev/sim/goal` | the sim | `x`, `y`, `radius` |
-| `cev/planner/path` | `sim_planner` | `found`, `cost`, `time`, `plan_ms`, `path`: points with `x`, `y`, `heading`, `speed`, `steer`, `time` |
+The messages are the team's protobuf types from
+[cornellev/cev-interfaces](https://github.com/cornellev/cev-interfaces). `sst_rs` pulls in its generated Rust
+crate (`cev-interfaces` in `Cargo.toml`). The planning messages come from our PR there,
+[cev-interfaces#5](https://github.com/cornellev/cev-interfaces/pull/5); until it merges, `Cargo.toml` points at its
+`planning-messages` branch, so switch that to `main` once it's in.
 
-All in meters and radians, JSON. The map is laid out like ROS's `OccupancyGrid`, which is common, so Cam's
-version may be close. x and y are on the ground with heading 0 along +x: the sim's x and z.
+| Key | Who publishes | Type | What's in it |
+|---|---|---|---|
+| `cev/sensors/lidar/occupancy_grid/global` | the lidar (here `fake_world`) | `OccupancyGrid` | size, resolution, origin, row-by-row cells with nav2 values: 0 free, 1-252 cost, 253 inscribed, 254 lethal, 255 unknown |
+| `cev/vehicle/state` | the sim / localization | `VehicleState` | rear axle `Pose2`, speed, steering |
+| `cev/planning/goal` | whatever sets the destination | `Goal` | target `Pose2`, arrival tolerance |
+| `cev/planning/global_path` | `sim_planner` | `Path` | points (pose, speed, steering, time), whether it reaches the goal, cost |
 
-When Cam's types land: swap these message structs (`sim.rs`) and key names for his, point `sim_planner` at the
-real sim instead of `fake_world`, and put the real speeds in.
+Conventions are cev-interfaces': SI units, radians, world x east / y north, heading counterclockwise from +x. The
+planner reads 253 and up as obstacles, 255 as unknown, and everything else as free, since it keeps its own clearance
+from obstacles.
+
+`OccupancyGrid` is still in an open PR ([cev-interfaces#3](https://github.com/cornellev/cev-interfaces/pull/3)), so
+it isn't in the generated crate yet. `sim.rs` has a copy with the same field numbers, which encodes and decodes the
+same bytes. Swap it for `cev_interfaces::OccupancyGrid` once #3 merges.
+
+To connect to the real sim: point `sim_planner` at it instead of `fake_world` and put in the real speeds. The
+topics and types are already the team's.
 
 ---
 

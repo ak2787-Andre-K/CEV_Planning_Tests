@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# The team's message types (protobuf). On the planning-messages branch until cornellev/cev-interfaces#5 merges
+cev-interfaces = { git = "https://github.com/cornellev/cev-interfaces", branch = "planning-messages" }
 flate2 = "1.1.10"
+prost = "0.14"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
